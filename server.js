@@ -12,6 +12,8 @@ const bcrypt = require("bcrypt");
 const nodemailer = require("nodemailer");
 const crypto = require("crypto");
 
+dotenv.config();
+
 const app = express();
 app.use(cors({
   origin: "http://localhost:8080", // ✅ allow your frontend origin only
@@ -1316,6 +1318,7 @@ ORDER BY
 });
 
 app.get("/get_upcoming_deadlines",async (req,res)=>{
+  console.log(process.env.DB_HOST);
   try{
     const [rows] = await db.query(`SELECT 
   s.id,
