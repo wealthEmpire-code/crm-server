@@ -15,7 +15,11 @@ const crypto = require("crypto");
 dotenv.config();
 
 const app = express();
-app.use(cors({}));
+app.use(cors({
+  origin: "https://wealthempire-crm-git-main-jeganaths-projects.vercel.app", // ✅ allow your frontend origin only
+  origin: "https://wealthempire-crm.vercel.app", // ✅ allow your frontend origin only
+  credentials: true, // ✅ allow cookies
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
@@ -503,212 +507,213 @@ app.post(
   }
 );
 
-app.post(
-  "/add_client",
-  upload.any(),
-  async (req, res) => {
-    try {
-      const {
-        company_name,
-        business_type,
-        pan,
-        gstin,
-        owner_name,
-        company_email,
-        phone,
-        address,
-        services,
-        status,
-        revenue
-      } = req.body;
-      console.log(req.body);
-      console.log(services);
-
-      const servicesArray = JSON.parse(services);
-      const parsedServices = JSON.stringify(servicesArray);
-
-// Create client folder
-const folder = path.join("uploads", company_name);
-if (!fs.existsSync(folder)) {
-  fs.mkdirSync(folder, { recursive: true });
-}
-
-const filePaths = {};
-const categories = Array.isArray(req.body.file_categories)
-  ? req.body.file_categories
-  : [req.body.file_categories]; // in case only one category sent
-
-// Process each uploaded file
-for (let i = 0; i < req.files.length; i++) {
-  const file = req.files[i];
-  const category = categories[i];
-  
-  if (category) {
-    const safeKey = category.toLowerCase().replace(/\s+/g, "_");
-    const fileExt = path.extname(file.originalname);
-    const fileName = `${safeKey}${fileExt}`;
-    const filePath = path.join(folder, fileName);
+app.post("/add_client", upload.any(), async (req, res) => {
+  try {
+    const {
+      company_name,
+      business_type,
+      pan,
+      gstin,
+      owner_name,
+      company_email,
+      phone,
+      address,
+      services,
+      status,
+      revenue,
+      roc, // Add roc here
+      shareholders // Add shareholders here
+    } = req.body;
     
-    // Move the file from temp location to our folder
-    fs.renameSync(file.path, filePath);
+    console.log(req.body);
+    console.log(services);
     
-    // Store the new path
-    filePaths[safeKey] = filePath;
-  }
-}    // Get least busy account manager
-const [manager] = await db.query(`
- WITH workload_cte AS (
-  SELECT 
-    u.id,
-    u.name,
-    u.last_assignment,
-    COUNT(c.id) AS workload
-  FROM users u
-  LEFT JOIN clients_data c ON c.status NOT IN ('completed', 'rejected') AND c.assignedTo = u.id
-  WHERE u.role = 'account_manager'
-  GROUP BY u.id
-),
-min_workload AS (
-  SELECT MIN(workload) AS min_workload FROM workload_cte
-)
-SELECT id, name
-FROM workload_cte
-WHERE workload = (SELECT min_workload FROM min_workload)
-ORDER BY last_assignment ASC
-LIMIT 1;
-`);
+    const servicesArray = JSON.parse(services);
+    const parsedServices = JSON.stringify(servicesArray);
 
+    // Parse shareholders if provided
+    const parsedShareholders = shareholders ? JSON.parse(shareholders) : null;
 
-      let assignedTo = null;
-let id = null;
+    // Create client folder
+    const folder = path.join("uploads", company_name);
+    if (!fs.existsSync(folder)) {
+      fs.mkdirSync(folder, { recursive: true });
+    }
 
-if (manager.length > 0) {
-  assignedTo = manager[0].name;
-  id = manager[0].id;
-}
+    const filePaths = {};
+    const categories = Array.isArray(req.body.file_categories)
+      ? req.body.file_categories
+      : [req.body.file_categories]; // in case only one category sent
+
+    // Process each uploaded file
+    for (let i = 0; i < req.files.length; i++) {
+      const file = req.files[i];
+      const category = categories[i];
       
-
-      // Insert client data
-      const sql = `
-        INSERT INTO clients_data 
-        (company_name, business_type, pan, gstin, owner_name, company_email, 
-         phone, address, status, services, gstin_file, pan_file, aadhar_file, 
-         incorporation_file, bank_statement, revenue,assignedTo)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,?)
-      `;
-      const values = [
-        company_name,
-        business_type,
-        pan,
-        gstin,
-        owner_name,
-        company_email,
-        phone,
-        address,
-        status,
-        parsedServices,
-        filePaths.gstin_file || null,
-        filePaths.pan_file || null,
-        filePaths.aadhaar_file || null,
-        filePaths.incorporation_file || null,
-        filePaths.bank_statement || null,
-        revenue,
-        assignedTo
-      ];
-
-      const [client] = await db.query(sql, values);
-      const client_id = client.insertId;
-
-      // Create service records with auto-assignment
-      const defaultServiceDetails = {
-        status: "started",
-        progress: 15,
-        assignedTo: assignedTo || "Unassigned",
-        deadline: null,
-      };
-
-      for (const type of servicesArray.map((s) => s.toLowerCase())) {
-        await db.query(
-          `INSERT INTO services 
-          (client_id, service_type, status, progress, assignedTo, deadline, priority)
-          VALUES (?, ?, ?, ?, ?, ?, get_priority_level(?))`,
-          [
-            client_id,
-            type,
-            defaultServiceDetails.status,
-            defaultServiceDetails.progress,
-            defaultServiceDetails.assignedTo,
-            defaultServiceDetails.deadline,
-            defaultServiceDetails.deadline,
-          ]
-        );
-      }
-
-      // Update manager's last assignment if assigned
-      if (id) {
-        await db.query(
-          `UPDATE users SET last_assignment = NOW() WHERE id = ?`,
-          [id]
-        );
-      }
-
-      res.status(200).json({ 
-        message: "✅ Client and services created successfully",
-        client_id,
-        assigned_to: assignedTo ? manager[0].name : "Unassigned"
-      });
-
-    
-    // Prepare billing record
-const invoiceNumber = `INV-${company_name + " "+ Date.now()}`; // Unique invoice number
-const billingDate = null; // You can update this later
-const dueDate = null;
-const totalAmount = parseFloat(revenue) || 0;
-const amountPaid = 0;
-
-// Store basic service descriptions
-const billingServices = servicesArray.map(service => ({
-  description: service,
-  quantity: 1,
-  unit_price: (totalAmount / servicesArray.length).toFixed(2)
-}));
-
-const billingSQL = `
-  INSERT INTO billing (
-    invoice_number, client_id, billing_date, due_date, 
-    services, subtotal, tax, total_amount, amount_paid, status
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`;
-
-const billingValues = [
-  invoiceNumber,
-  client_id,
-  billingDate,
-  dueDate,
-  JSON.stringify(billingServices),
-  totalAmount,       // subtotal (same as revenue here)
-  0,                 // tax
-  totalAmount,
-  amountPaid,
-  "unpaid"
-];
-
-await db.query(billingSQL, billingValues);
- 
-    
-}
-    
-    catch (error) {
-      console.error("❌ Error saving client:", error);
-      if (!res.headersSent) {
-        res.status(500).json({ 
-          error: "Failed to create client",
-          details: error.message 
-        });
+      if (category) {
+        const safeKey = category.toLowerCase().replace(/\s+/g, "_");
+        const fileExt = path.extname(file.originalname);
+        const fileName = `${safeKey}${fileExt}`;
+        const filePath = path.join(folder, fileName);
+        
+        // Move the file from temp location to our folder
+        fs.renameSync(file.path, filePath);
+        
+        // Store the new path
+        filePaths[safeKey] = filePath;
       }
     }
+
+    // Get least busy account manager
+    const [manager] = await db.query(`
+      WITH workload_cte AS (
+        SELECT 
+          u.id,
+          u.name,
+          u.last_assignment,
+          COUNT(c.id) AS workload
+        FROM users u
+        LEFT JOIN clients_data c ON c.status NOT IN ('completed', 'rejected') AND c.assignedTo = u.id
+        WHERE u.role = 'account_manager'
+        GROUP BY u.id
+      ),
+      min_workload AS (
+        SELECT MIN(workload) AS min_workload FROM workload_cte
+      )
+      SELECT id, name
+      FROM workload_cte
+      WHERE workload = (SELECT min_workload FROM min_workload)
+      ORDER BY last_assignment ASC
+      LIMIT 1;
+    `);
+
+    let assignedTo = null;
+    let id = null;
+
+    if (manager.length > 0) {
+      assignedTo = manager[0].name;
+      id = manager[0].id;
+    }
+
+    // Insert client data
+  const sql = `
+  INSERT INTO clients_data 
+  (company_name, business_type, pan, gstin, owner_name, company_email, 
+   phone, address, status, services, gstin_file, pan_file, aadhar_file, 
+   incorporation_file, bank_statement, revenue, assignedTo, roc, shareholders)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`;
+
+const values = [
+  company_name,
+  business_type,
+  pan,
+  gstin,
+  owner_name,
+  company_email,
+  phone,
+  address,
+  status,
+  parsedServices,
+  filePaths.gstin_file || null,
+  filePaths.pan_file || null,
+  filePaths.aadhaar_file || null,
+  filePaths.incorporation_file || null,
+  filePaths.bank_statement || null,
+  revenue,
+  assignedTo,
+  roc,
+  parsedShareholders ? JSON.stringify(parsedShareholders) : null // ✅ This was missing
+];
+
+
+    const [client] = await db.query(sql, values);
+    const client_id = client.insertId;
+
+    // Create service records with auto-assignment
+    const defaultServiceDetails = {
+      status: "started",
+      progress: 15,
+      assignedTo: assignedTo || "Unassigned",
+      deadline: null,
+    };
+
+    for (const type of servicesArray.map((s) => s.toLowerCase())) {
+      await db.query(
+        `INSERT INTO services 
+        (client_id, service_type, status, progress, assignedTo, deadline, priority)
+        VALUES (?, ?, ?, ?, ?, ?, get_priority_level(?))`,
+        [
+          client_id,
+          type,
+          defaultServiceDetails.status,
+          defaultServiceDetails.progress,
+          defaultServiceDetails.assignedTo,
+          defaultServiceDetails.deadline,
+          defaultServiceDetails.deadline,
+        ]
+      );
+    }
+
+    // Update manager's last assignment if assigned
+    if (id) {
+      await db.query(
+        `UPDATE users SET last_assignment = NOW() WHERE id = ?`,
+        [id]
+      );
+    }
+
+    res.status(200).json({ 
+      message: "✅ Client and services created successfully",
+      client_id,
+      assigned_to: assignedTo ? manager[0].name : "Unassigned"
+    });
+
+    // Prepare billing record
+    const invoiceNumber = `INV-${company_name + " " + Date.now()}`; // Unique invoice number
+    const billingDate = null; // You can update this later
+    const dueDate = null;
+    const totalAmount = parseFloat(revenue) || 0;
+    const amountPaid = 0;
+
+    // Store basic service descriptions
+    const billingServices = servicesArray.map(service => ({
+      description: service,
+      quantity: 1,
+      unit_price: (totalAmount / servicesArray.length).toFixed(2),
+    }));
+
+    const billingSQL = `
+      INSERT INTO billing (
+        invoice_number, client_id, billing_date, due_date, 
+        services, subtotal, tax, total_amount, amount_paid, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+
+    const billingValues = [
+      invoiceNumber,
+      client_id,
+      billingDate,
+      dueDate,
+      JSON.stringify(billingServices),
+      totalAmount,       // subtotal (same as revenue here)
+      0,                 // tax
+      totalAmount,
+      amountPaid,
+      "unpaid",
+    ];
+
+    await db.query(billingSQL, billingValues);
+  } catch (error) {
+    console.error("❌ Error saving client:", error);
+    if (!res.headersSent) {
+      res.status(500).json({ 
+        error: "Failed to create client",
+        details: error.message 
+      });
+    }
   }
-);
+});
 
 // ✅ Upload KYC files
 app.post(
@@ -1449,6 +1454,169 @@ app.patch("/update_payment/:id", async (req, res) => {
     res.status(500).json({ error: "Failed to update billing" });
   }
 });
+
+app.get("/get_analytics",async (req,res)=>{
+  const query=`SELECT service_type, COUNT(*) AS count FROM services GROUP BY service_type;`
+  
+  try{
+    const [rows]=await db.query(query);
+    res.send(rows);
+  }
+  catch(e){
+    console.log(e,"error");
+  }
+});
+  app.get("/get_revenue_analytics",async (req,res)=>{
+  const query=`WITH months AS (
+  SELECT
+    DATE_FORMAT(DATE_SUB(CURDATE(), INTERVAL n MONTH), '%b') AS month,
+    MONTH(DATE_SUB(CURDATE(), INTERVAL n MONTH)) AS month_number
+  FROM (
+    SELECT 0 AS n UNION SELECT 1 UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5
+  ) AS numbers
+),
+billing_data AS (
+  SELECT
+    DATE_FORMAT(GREATEST(IFNULL(updated_at, created_at), created_at), '%b') AS month,
+    MONTH(GREATEST(IFNULL(updated_at, created_at), created_at)) AS month_number,
+    SUM(total_amount) AS revenue,
+    COUNT(DISTINCT client_id) AS clients
+  FROM billing
+  WHERE GREATEST(IFNULL(updated_at, created_at), created_at) >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
+  GROUP BY month_number, month
+)
+SELECT
+  m.month,
+  m.month_number,
+  IFNULL(b.revenue, 0) AS revenue,
+  IFNULL(b.clients, 0) AS clients
+FROM months m
+LEFT JOIN billing_data b ON m.month_number = b.month_number
+ORDER BY m.month_number;
+`
+  
+  try{
+    const [rows]=await db.query(query);
+    res.send(rows);
+  }
+  catch(e){
+    console.log(e,"error");
+  }
+});
+
+app.get("/get_dashboard_analytics",async (req,res)=>{
+  const query=`SELECT
+  (SELECT SUM(amount_paid) FROM billing WHERE status IN ('paid', 'partial')) AS total_revenue,
+  (SELECT COUNT(DISTINCT cd.id)
+   FROM clients_data cd
+   JOIN services s ON cd.id = s.client_id
+   WHERE cd.status = 'active') AS active_clients,
+  (SELECT COUNT(*) FROM services WHERE LOWER(status) = 'completed' OR progress = 100) AS services_completed,
+  (SELECT 
+     ROUND(
+       (SUM(CASE WHEN LOWER(status) = 'completed' OR progress = 100 THEN 1 ELSE 0 END) * 100.0)
+       / COUNT(*),
+       2
+     )
+   FROM services) AS efficiency_rate;`;
+   try{
+    const [rows]=await db.query(query);
+    res.send(rows);
+   }
+   catch(e){
+    console.log(e,"error");
+   }
+});
+
+app.get("/team_performance",async(req,res)=>{
+  const query=`SELECT 
+  UPPER(service_type) AS team,
+  COUNT(*) AS total_services,
+  SUM(CASE WHEN progress = 100 OR LOWER(status) = 'completed' THEN 1 ELSE 0 END) AS completed_services,
+  ROUND(
+    SUM(CASE WHEN progress = 100 OR LOWER(status) = 'completed' THEN 1 ELSE 0 END) * 100 / COUNT(*),
+    2
+  ) AS efficiency
+FROM services
+WHERE service_type IN ('incorp', 'gst', 'itr', 'mca', 'ip')
+GROUP BY service_type;
+`;
+   try{
+    const [rows]=await db.query(query);
+    res.send(rows);
+   }
+   catch(e){
+    console.log(e,"error");
+   }
+
+});
+
+app.get("/get_user/:userName", async (req, res) => {
+  console.log("It hits!!");
+  const userName = req.params.userName;
+  if (!userName) return res.status(400).json({ message: "Username required" });
+  const query=`SELECT * FROM users WHERE name = "${userName}"`;
+
+  try{
+  const [rows]=await db.query(query);
+  res.send(rows);
+   }
+   catch(e){
+    console.log(e,"error");
+   }
+
+});
+
+app.post("/update_profile", async (req, res) => {
+  const { name, email, password, newPassword } = req.body;
+
+  if (!password) {
+    return res.status(400).json({ message: "Current password is required." });
+  }
+
+  try {
+    // Get user by either email or name
+    const [rows] = await db.query(
+      "SELECT id, password FROM users WHERE email = ? OR name = ?",
+      [email, name]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    const user = rows[0];
+
+    // Validate current password
+    const valid = await bcrypt.compare(password, user.password);
+    if (!valid) {
+      return res.status(401).json({ message: "Invalid password." });
+    }
+
+    // Build update query
+    let query = "UPDATE users SET name = ?, email = ?";
+    const values = [name, email];
+
+    if (newPassword) {
+      const hashed = await bcrypt.hash(newPassword, 10);
+      query += ", password = ?";
+      values.push(hashed);
+    }
+
+    query += " WHERE id = ?";
+    values.push(user.id);
+
+    // Execute update
+    await db.query(query, values);
+    res.json({ message: "Profile updated successfully." });
+
+  } catch (err) {
+    console.error("Error updating profile:", err);
+    res.status(500).json({ message: "Server error." });
+  }
+});
+
+
 
 
 
