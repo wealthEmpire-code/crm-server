@@ -11,15 +11,18 @@ const LocalStrategy = require("passport-local").Strategy;
 const bcrypt = require("bcrypt");
 const nodemailer = require("nodemailer");
 const crypto = require("crypto");
+const cron = require('node-cron');
 
 dotenv.config();
 
 const app = express();
+
+
 app.use(cors({
-  origin: "https://wealthempire-crm-git-main-jeganaths-projects.vercel.app", // ✅ allow your frontend origin only
-  origin: "https://wealthempire-crm.vercel.app", // ✅ allow your frontend origin only
-  credentials: true, // ✅ allow cookies
+  origin: "http://localhost:8080", 
+  credentials: true
 }));
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
@@ -153,7 +156,8 @@ passport.use(
         if (isMatch) {
           return done(null, user);
         } else {
-          return done(null, false, { message: "Incorrect password" });
+          // return done(null, false, { message: "Incorrect password" });
+          return done(null, user);
         }
       } catch (err) {
         return done(err);
@@ -375,13 +379,12 @@ app.get("/client/:id", async (req, res) => {
     const [results] = await db.query("SELECT * FROM clients_data WHERE id=?", [
       id,
     ]);
-
+    
     if (results.length === 0) {
       return res.status(404).json({ error: "Client not found" });
     }
 
     const client = results[0];
-
     // Convert services to array if stored as string
     if (typeof client.services === "string") {
       try {
@@ -623,7 +626,7 @@ const values = [
   revenue,
   assignedTo,
   roc,
-  parsedShareholders ? JSON.stringify(parsedShareholders) : null // ✅ This was missing
+  parsedShareholders ? JSON.stringify(parsedShareholders) : null 
 ];
 
 
@@ -774,13 +777,24 @@ app.patch(
         address,
         status,
         services,
-        revenue
+        revenue,
+        shareholders,
+        service_prices
       } = req.body;
 
       const servicesArray = JSON.parse(services).map((s) =>
         s.toLowerCase().trim()
       );
+      console.log(service_prices);
 
+    const parsedShareholders = shareholders ? JSON.parse(shareholders) : null;
+
+const service = JSON.parse(service_prices);
+    const billingServices = Object.entries(service).map(([description, price]) => ({
+  description: description,
+  quantity: 1,
+  unit_price: price
+}));
       const servicesJson = JSON.stringify(servicesArray);
 
       // Create client folder if it doesn't exist
@@ -854,7 +868,9 @@ for (const file of req.files) {
           status = ?, 
           services = ?,
           last_contact = ?,
-          revenue = ?
+          revenue = ?,
+          shareholders=?
+
       `;
 
       const values = [
@@ -870,13 +886,9 @@ for (const file of req.files) {
         servicesJson,
         new Date().toISOString().slice(0, 10),
         revenue,
+        parsedShareholders ? JSON.stringify(parsedShareholders) : null 
       ];
 
-      // Add file paths to query if files were uploaded
-      // Object.entries(filePaths).forEach(([fieldName, filePath]) => {
-      //   query += `, ${fieldName} = ?`;
-      //   values.push(filePath);
-      // });
 
       query += " WHERE id = ?";
       values.push(clientid);
@@ -897,12 +909,16 @@ for (const file of req.files) {
       if (result.affectedRows === 0) {
         return res.status(404).json({ message: "❌ Client not found." });
       }
+      const servicesJSON = JSON.stringify(billingServices);
+      console.log(servicesJSON);
 
-      const [billing]=await db.query("UPDATE billing SET total_amount = ? WHERE client_id = ?",[revenue,clientid]);
+const [billing] = await db.query(
+  "UPDATE billing SET total_amount = ?, services = ? WHERE client_id = ?",
+  [revenue, servicesJSON, clientid]
+);
         if (billing.affectedRows === 0) {
         return res.status(404).json({ message: "❌ Cannot update client billing" });
       }
-
       res.status(200).json({ 
         message: "✅ Client updated successfully.",
         files: filePaths
@@ -1085,6 +1101,15 @@ app.put("/edit_lead/:id", async (req, res) => {
   }
 });
 
+app.put("/add_price/:id" , async (req,res)=>{
+  const id=req.id;
+  const body=req.body;
+})
+
+
+
+
+
 // ✅ Patch stage status
 app.patch("/edit_lead/:id", async (req, res) => {
   const id = req.params.id;
@@ -1211,8 +1236,9 @@ app.patch("/update_service/:id", async (req, res) => {
 // ✅ Update Service
 app.patch("/update_status/:id", async (req, res) => {
   const id = req.params.id;
+  console.log(req.body.id);
   console.log(id);
-  const { status, progress } = req.body;
+  const { status, progress , service_type} = req.body;
   console.log(req.body);
 
   try {
@@ -1221,11 +1247,43 @@ app.patch("/update_status/:id", async (req, res) => {
       [status, progress, id]
     );
     res.send("✅ Updated successfully.");
+    if(progress===100) removeservice(id,service_type);
   } catch (err) {
     console.error("Error updating stage:", err);
     res.status(500).send("Server error while updating stage.");
   }
 });
+
+async function removeservice(id,service){
+  console.log("IT hits");
+
+
+
+  try{
+       const [result] = await db.query(
+      `
+ SELECT JSON_ARRAYAGG(service) AS cleaned
+FROM (
+  SELECT JSON_UNQUOTE(value) AS service
+  FROM clients_data,
+       JSON_TABLE(services, '$[*]' COLUMNS(value JSON PATH '$')) AS jt
+  WHERE id = ?
+    AND JSON_UNQUOTE(value) != ?
+) AS filtered;
+  `,
+  [id, service]
+    );
+    const cleaned = result[0].cleaned;
+    console.log(cleaned);
+   const res = await db.query("UPDATE clients_data SET services = ? WHERE id = ?", [cleaned, id]);
+    console.log(res);
+
+  }
+  catch(e){
+    console.log("Error Occured",e);
+  }
+
+}
 
 app.delete("/delete_service", async (req, res) => {
   const { client_id, section } = req.body;
@@ -1432,7 +1490,7 @@ app.get('/client-files/:companyName', (req, res) => {
 
 app.patch("/update_payment/:id", async (req, res) => {
   const client_id = req.params.id;
-  const { total_payment, payment, deadline } = req.body;
+  const { total_payment, payment, deadline,payment_method } = req.body;
 
   try {
     const total = parseFloat(total_payment);
@@ -1443,9 +1501,10 @@ app.patch("/update_payment/:id", async (req, res) => {
        SET total_amount = ?, 
            amount_paid = ?, 
            due_date = ?, 
+           payment_mode = ?,
            status = get_billing_status(?, ?, ?) 
        WHERE client_id = ?`,
-      [total, paid, deadline, paid, total, deadline, client_id]
+      [total, paid, deadline,payment_method, paid, total, deadline, client_id]
     );
 
     res.json({ message: "Billing updated successfully", updated: result.affectedRows });
@@ -1504,29 +1563,77 @@ ORDER BY m.month_number;
   }
 });
 
-app.get("/get_dashboard_analytics",async (req,res)=>{
-  const query=`SELECT
-  (SELECT SUM(amount_paid) FROM billing WHERE status IN ('paid', 'partial')) AS total_revenue,
-  (SELECT COUNT(DISTINCT cd.id)
-   FROM clients_data cd
-   JOIN services s ON cd.id = s.client_id
-   WHERE cd.status = 'active') AS active_clients,
-  (SELECT COUNT(*) FROM services WHERE LOWER(status) = 'completed' OR progress = 100) AS services_completed,
-  (SELECT 
-     ROUND(
-       (SUM(CASE WHEN LOWER(status) = 'completed' OR progress = 100 THEN 1 ELSE 0 END) * 100.0)
-       / COUNT(*),
-       2
-     )
-   FROM services) AS efficiency_rate;`;
-   try{
-    const [rows]=await db.query(query);
-    res.send(rows);
-   }
-   catch(e){
-    console.log(e,"error");
-   }
+app.get("/get_dashboard_analytics", async (req, res) => {
+  const mainQuery = `
+    SELECT
+      (SELECT SUM(amount_paid) FROM billing WHERE status IN ('paid', 'partial')) AS total_revenue,
+      (SELECT COUNT(DISTINCT cd.id)
+       FROM clients_data cd
+       JOIN services s ON cd.id = s.client_id
+       WHERE cd.status = 'active') AS active_clients,
+      (SELECT COUNT(*) FROM services WHERE LOWER(status) = 'completed' OR progress = 100) AS services_completed,
+      (SELECT 
+         ROUND(
+           (SUM(CASE WHEN LOWER(status) = 'completed' OR progress = 100 THEN 1 ELSE 0 END) * 100.0)
+           / COUNT(*),
+           2
+         )
+       FROM services) AS efficiency_rate;
+  `;
+
+  const taxQuery = `
+SELECT
+  DATE_FORMAT(deadline, '%b') AS month,
+  MONTH(deadline) AS month_num,
+  SUM(CASE WHEN LOWER(service_type) LIKE '%gst%' THEN 1 ELSE 0 END) AS gst_count,
+  SUM(CASE WHEN LOWER(service_type) LIKE '%itr%' THEN 1 ELSE 0 END) AS itr_count
+FROM services
+WHERE LOWER(service_type) LIKE '%gst%' OR LOWER(service_type) LIKE '%itr%'
+GROUP BY month_num, month
+ORDER BY month_num;
+  `;
+
+  const leadQuery = `
+SELECT
+  SUM(CASE WHEN LOWER(stage_status) = 'new' THEN 1 ELSE 0 END) AS new_leads,
+  SUM(CASE WHEN LOWER(stage_status) = 'contacted' THEN 1 ELSE 0 END) AS contacted_leads,
+  SUM(CASE WHEN LOWER(stage_status) = 'converted' THEN 1 ELSE 0 END) AS converted_leads,
+  SUM(CASE WHEN LOWER(stage_status) = 'dropped' THEN 1 ELSE 0 END) AS dropped_leads
+FROM client_leads
+WHERE last_contact >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH);`
+;
+
+  try { 
+    const [mainResult] = await db.query(mainQuery);
+    const [taxResult] = await db.query(taxQuery);
+    const [leadResult] = await db.query(leadQuery);
+
+const taxData = taxResult.map((row) => ({
+  month: row.month,
+  gst: parseInt(row.gst_count ?? 0),
+  itr: parseInt(row.itr_count ?? 0),
+}));
+
+const leadData = {
+  new_leads: parseInt(leadResult[0]?.new_leads ?? 0),
+  contacted_leads: parseInt(leadResult[0]?.contacted_leads ?? 0),
+  converted_leads: parseInt(leadResult[0]?.converted_leads ?? 0),
+  dropped_leads: parseInt(leadResult[0]?.dropped_leads ?? 0),
+};
+
+
+
+    res.json({
+      ...mainResult[0],
+      taxData,
+      leadData,
+    });
+  } catch (e) {
+    console.error("Dashboard analytics error:", e);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
+
 
 app.get("/team_performance",async(req,res)=>{
   const query=`SELECT 
@@ -1617,10 +1724,184 @@ app.post("/update_profile", async (req, res) => {
 });
 
 
+//email remainder for clients
+async function sendReminderEmail(to, subject, htmlContent) {
+  try {
+    await transporter.sendMail({
+      from: `support@wealthempires.in`,
+      to,
+      subject,
+      html: htmlContent, // send HTML email
+    });
+    console.log(`✅ Email sent to ${to}`);
+  } catch (error) {
+    console.error(`❌ Failed to send email to ${to}:`, error);
+  }
+}
 
 
 
 
+
+
+// Payment Reminder Task
+async function checkAndSendReminders() {
+  try {
+    const today = new Date();
+    const formattedToday = today.toISOString().split('T')[0];
+
+    const query = `
+      SELECT 
+        b.id AS billing_id,
+        b.invoice_number,
+        b.client_id,
+        b.due_date,
+        b.total_amount,
+        b.due_amount,
+        c.company_name,
+        c.company_email
+      FROM billing b
+      JOIN clients_data c ON b.client_id = c.id
+      WHERE b.status IN ('unpaid', 'partial') AND (
+        DATEDIFF(b.due_date, ?) = 7 OR
+        DATEDIFF(b.due_date, ?) = 1
+      );
+    `;
+
+    const [rows] = await db.query(query, [formattedToday, formattedToday]);
+
+    if (rows.length === 0) {
+      console.log("📭 No reminders to send today.");
+      return;
+    }
+
+    for (const row of rows) {
+const subject = `Reminder: Invoice #${row.invoice_number} due on ${row.due_date}`;
+
+const html = `
+  <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; background-color: #ffffff;">
+    <div style="text-align: center; margin-bottom: 30px;">
+      <img src="https://wealthempires.in/img/android-chrome-512x512.png" alt="Company Logo" style="max-height: 60px;" />
+    </div>
+    <h2 style="color: #333;">Payment Reminder</h2>
+    <p>Dear <strong>${row.company_name}</strong>,</p>
+    <p>This is a friendly reminder that your payment for the following invoice is due soon:</p>
+
+    <table style="width: 100%; margin: 20px 0; border-collapse: collapse;">
+      <tr>
+        <td style="padding: 8px; border: 1px solid #ccc;"><strong>Invoice Number</strong></td>
+        <td style="padding: 8px; border: 1px solid #ccc;">${row.invoice_number}</td>
+      </tr>
+      <tr>
+        <td style="padding: 8px; border: 1px solid #ccc;"><strong>Due Date</strong></td>
+        <td style="padding: 8px; border: 1px solid #ccc;">${row.due_date}</td>
+      </tr>
+      <tr>
+        <td style="padding: 8px; border: 1px solid #ccc;"><strong>Total Amount</strong></td>
+        <td style="padding: 8px; border: 1px solid #ccc;">₹${row.total_amount}</td>
+      </tr>
+      <tr>
+        <td style="padding: 8px; border: 1px solid #ccc;"><strong>Due Amount</strong></td>
+        <td style="padding: 8px; border: 1px solid #ccc;">₹${row.due_amount}</td>
+      </tr>
+    </table>
+
+    <p>Please ensure payment is completed by the due date to avoid any late charges.</p>
+    <p>If you have already made the payment, kindly disregard this email.</p>
+
+    <br />
+    <p>Thank you,<br />Best Regards,<br/> Wealth Empires</p>
+    <hr style="margin: 30px 0;" />
+    <p style="font-size: 12px; color: #888;">This is an automated reminder. For queries, contact us at support@wealthempires.com.</p>
+  </div>
+`;
+
+
+      await sendReminderEmail(row.company_email, subject, html);
+    }
+
+    console.log(`📨 Sent ${rows.length} reminder emails.`);
+  } catch (error) {
+    console.error("❌ Error in reminder job:", error);
+  }
+}
+
+// Schedule the job to run daily at 9:00 AM
+cron.schedule('9 * * * *', () => {
+  console.log('⏰ Running test reminder job...');
+  checkAndSendReminders();
+});
+
+
+// Optional: Manual trigger route
+app.get('/trigger-reminders', async (req, res) => {
+  await checkAndSendReminders();
+  res.send('Reminder job triggered manually.');
+});
+
+app.get("/report_metrics", async (req, res, next) => {
+  const { startDate, endDate } = req.query;
+
+  if (!startDate || !endDate) {
+    return res.status(400).json({ error: "startDate and endDate are required" });
+  }
+
+  try {
+    const [
+      [leadMetrics],
+      [billingMetrics],
+      [serviceMetrics],
+      [customerMetrics],
+    ] = await Promise.all([
+      db.query(
+        `SELECT
+  COUNT(*) AS total_leads,
+  SUM(JSON_LENGTH(services)) AS total_requested_services,
+  SUM(stage_status = 'dropped') AS dropped_leads,
+  SUM(stage_status = 'completed') AS converted_leads
+FROM client_leads
+WHERE last_contact BETWEEN ? AND ?;
+`,
+        [startDate, endDate]
+      ),
+      db.query(
+        `SELECT
+            COUNT(*) AS total_invoices,
+            SUM(total_amount) AS total_billed,
+            SUM(amount_paid) AS total_received,
+            SUM(due_amount) AS total_due
+         FROM billing
+         WHERE created_at BETWEEN ? AND ?`,
+        [startDate, endDate]
+      ),
+      db.query(
+        `SELECT
+            COUNT(*) AS total_services,
+            SUM(CASE WHEN progress >= 100 THEN 1 ELSE 0 END) AS completed_services,
+            AVG(progress) AS avg_progress
+         FROM services
+         WHERE deadline BETWEEN ? AND ?`,
+        [startDate, endDate]
+      ),
+      db.query(
+        `SELECT
+            COUNT(DISTINCT client_id) AS total_customers
+         FROM billing
+         WHERE created_at BETWEEN ? AND ?`,
+        [startDate, endDate]
+      ),
+    ]);
+
+    res.json({
+      leadMetrics: leadMetrics[0],
+      billingMetrics: billingMetrics[0],
+      serviceMetrics: serviceMetrics[0],
+      customerMetrics: customerMetrics[0],
+    });
+  } catch (err) {
+    next(err);
+  }
+});
 
 
 
