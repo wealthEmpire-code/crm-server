@@ -104,6 +104,16 @@ const storage = multer.diskStorage({
       case 'incorporation':
         filename = `INCORPORATION_${timestamp}${ext}`;
         break;
+       case 'address':
+        filename = `ADDRESS_${timestamp}${ext}`;
+        break;
+       case 'identity':
+        filename = `IDENTITY_${timestamp}${ext}`;
+        break;
+               case 'photo':
+        filename = `PHOTO_${timestamp}${ext}`;
+        break;
+
       case 'bank_statement':
       case 'bank':
         filename = `BANK_STATEMENT_${timestamp}${ext}`;
@@ -121,7 +131,6 @@ const upload = multer({
   storage,
   limits: {
     fileSize: 25 * 1024 * 1024, // 25MB per file
-    files: 10 // Maximum 10 files
   },
   fileFilter: (req, file, cb) => {
     // Validate file extensions
@@ -139,7 +148,7 @@ const upload = multer({
 passport.use(
   new LocalStrategy(
     {
-      usernameField: "email", // matches `req.body.email` from frontend
+      usernameField: "email", 
       passwordField: "password",
     },
     async function (email, password, done) {
@@ -376,30 +385,57 @@ app.get('/clients/:userName', async (req, res) => {
 app.get("/client/:id", async (req, res) => {
   const id = req.params.id;
   try {
-    const [results] = await db.query("SELECT * FROM clients_data WHERE id=?", [
-      id,
-    ]);
-    
+    const [results] = await db.query("SELECT * FROM clients_data WHERE id = ?", [id]);
+
+    const [price] = await db.query(`
+      SELECT 
+        jt.description AS service,
+        jt.unit_price AS price
+      FROM billing b,
+      JSON_TABLE(
+        b.services,
+        '$[*]' COLUMNS (
+          description VARCHAR(255) PATH '$.description',
+          unit_price DECIMAL(10,2) PATH '$.unit_price'
+        )
+      ) AS jt
+      WHERE b.client_id = ?;
+    `, [id]);
+
     if (results.length === 0) {
       return res.status(404).json({ error: "Client not found" });
     }
 
     const client = results[0];
-    // Convert services to array if stored as string
-    if (typeof client.services === "string") {
-      try {
-        client.services = JSON.parse(client.services);
-      } catch {
-        client.services = [];
-      }
-    }
 
-    res.json(client); // ✅ now returning an object, not array
+// Always convert services into { data, price_data }
+if (typeof client.services === "string") {
+  try {
+    client.services = {
+      data: JSON.parse(client.services),
+      price_data: price
+    };
+  } catch {
+    client.services = {
+      data: client.services.split(',').map(s => s.trim()),
+      price_data: price
+    };
+  }
+} else if (Array.isArray(client.services)) {
+  client.services = {
+    data: client.services,
+    price_data: price
+  };
+}
+
+
+    res.json(client,price);
   } catch (err) {
-    console.error("Error fetching clients:", err);
+    console.error("Error fetching client:", err);
     res.status(500).send("Server error while fetching clients");
   }
 });
+
 
 // ✅ Create a client
 app.post(
@@ -429,7 +465,7 @@ app.post(
 
       const servicesArray = JSON.parse(services);
       const parsedServices = JSON.stringify(servicesArray);
-
+      const filePaths = {};
       const folder = path.join("uploads", req.uploadFolderName);
       const gstinFilePath = req.files["gstin_file"]
         ? path.join(folder, req.files["gstin_file"][0].filename)
@@ -442,8 +478,10 @@ app.post(
         Object.entries(req.files).forEach(([fieldname, files]) => {
           if (files && files[0]) {
             const newFilename = `${fieldname.toUpperCase()}_${Date.now()}${path.extname(files[0].originalname)}`;
-            const newPath = path.join(uploadFolder, newFilename);
-            
+            const newPath = path.join(folder, newFilename);
+
+            fs.mkdirSync(folder, { recursive: true });
+
             fs.renameSync(files[0].path, newPath);
             filePaths[fieldname] = newPath;
           }
@@ -538,34 +576,33 @@ app.post("/add_client", upload.any(), async (req, res) => {
     const parsedShareholders = shareholders ? JSON.parse(shareholders) : null;
 
     // Create client folder
-    const folder = path.join("uploads", company_name);
+    const safeCompanyName = company_name.trim().replace(/[^a-zA-Z0-9]/g, "_");
+    const folder = path.join(__dirname, "..", "uploads", "clients", safeCompanyName);
     if (!fs.existsSync(folder)) {
       fs.mkdirSync(folder, { recursive: true });
     }
 
     const filePaths = {};
-    const categories = Array.isArray(req.body.file_categories)
-      ? req.body.file_categories
-      : [req.body.file_categories]; // in case only one category sent
+const categories = Array.isArray(req.body.file_categories)
+  ? req.body.file_categories
+  : [req.body.file_categories]; // Handle single category
 
-    // Process each uploaded file
-    for (let i = 0; i < req.files.length; i++) {
-      const file = req.files[i];
-      const category = categories[i];
-      
-      if (category) {
-        const safeKey = category.toLowerCase().replace(/\s+/g, "_");
-        const fileExt = path.extname(file.originalname);
-        const fileName = `${safeKey}${fileExt}`;
-        const filePath = path.join(folder, fileName);
-        
-        // Move the file from temp location to our folder
-        fs.renameSync(file.path, filePath);
-        
-        // Store the new path
-        filePaths[safeKey] = filePath;
-      }
+for (let i = 0; i < req.files.length; i++) {
+  const file = req.files[i];
+  const category = categories[i];
+
+  if (category) {
+    const safeKey = category.toLowerCase().replace(/\s+/g, "_");
+
+    // ✅ Skip manual rename — multer already stored file at file.path
+    if (!filePaths[safeKey]) {
+      filePaths[safeKey] = [];
     }
+
+    filePaths[safeKey].push(file.path); // Already correct path
+  }
+}
+
 
     // Get least busy account manager
     const [manager] = await db.query(`
@@ -601,33 +638,27 @@ app.post("/add_client", upload.any(), async (req, res) => {
     // Insert client data
   const sql = `
   INSERT INTO clients_data 
-  (company_name, business_type, pan, gstin, owner_name, company_email, 
-   phone, address, status, services, gstin_file, pan_file, aadhar_file, 
-   incorporation_file, bank_statement, revenue, assignedTo, roc, shareholders)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+(company_name, business_type, owner_name, company_email, 
+ phone, address, status, services, revenue, assignedTo, roc, shareholders)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+
 `;
 
 const values = [
   company_name,
   business_type,
-  pan,
-  gstin,
   owner_name,
   company_email,
   phone,
   address,
   status,
-  parsedServices,
-  filePaths.gstin_file || null,
-  filePaths.pan_file || null,
-  filePaths.aadhaar_file || null,
-  filePaths.incorporation_file || null,
-  filePaths.bank_statement || null,
+  JSON.stringify(services), // ✅ proper JSON string
   revenue,
   assignedTo,
   roc,
-  parsedShareholders ? JSON.stringify(parsedShareholders) : null 
+  parsedShareholders ? JSON.stringify(parsedShareholders) : null
 ];
+
 
 
     const [client] = await db.query(sql, values);
@@ -873,21 +904,22 @@ for (const file of req.files) {
 
       `;
 
-      const values = [
-        company_name,
-        business_type,
-        pan,
-        gstin,
-        owner_name,
-        company_email,
-        phone,
-        address,
-        status,
-        servicesJson,
-        new Date().toISOString().slice(0, 10),
-        revenue,
-        parsedShareholders ? JSON.stringify(parsedShareholders) : null 
-      ];
+const values = [
+  company_name,
+  business_type,
+  pan?.trim() ? pan : null,
+  gstin?.trim() ? gstin : null,
+  owner_name,
+  company_email,
+  phone,
+  address,
+  status,
+  servicesJson,
+  new Date().toISOString().slice(0, 10),
+  revenue,
+  parsedShareholders ? JSON.stringify(parsedShareholders) : null
+];
+
 
 
       query += " WHERE id = ?";
@@ -905,6 +937,16 @@ for (const file of req.files) {
           );
         }
       }
+      const expiryDates = JSON.parse(req.body.expiry_dates || "{}");
+
+for (const [service, expiry] of Object.entries(expiryDates)) {
+  
+  await db.query(
+    `UPDATE services SET expiry_date = ? WHERE client_id = ? AND service_type = ?`,
+    [expiry, clientid, service]
+  );
+}
+
 
       if (result.affectedRows === 0) {
         return res.status(404).json({ message: "❌ Client not found." });
@@ -1325,7 +1367,7 @@ app.get("/dashboard_stats", async (req, res) => {
         (SELECT COUNT(DISTINCT client_id) FROM services) AS total_clients,
         (SELECT COUNT(*) FROM clients_data WHERE status = 'active') AS active_services,
         (SELECT COUNT(*) FROM services WHERE status != 'approval' AND progress < 100) AS pending_tasks,
-        (SELECT SUM(revenue) FROM clients_data) AS total_revenue
+        (SELECT SUM(amount_paid) FROM billing WHERE status IN ('paid', 'partial')) AS total_revenue
     `);
 
     res.json(rows[0]);
@@ -1387,7 +1429,10 @@ app.get("/get_upcoming_deadlines",async (req,res)=>{
     WHEN s.service_type = 'gst' THEN 'GST Filing'
     WHEN s.service_type = 'itr' THEN 'ITR Filing'
     WHEN s.service_type = 'mca' THEN 'MCA Annual Return'
-    WHEN s.service_type = 'ip' THEN 'Trademark Renewal'
+    WHEN s.service_type = 'ip' THEN ' IP Trademark Renewal'
+    WHEN s.service_type = 'iso' THEN 'ISO'
+    WHEN s.service_type = 'fssai' THEN 'FSSAI'
+
     ELSE 'Other Service'
   END AS title,
 
@@ -1538,7 +1583,7 @@ billing_data AS (
   SELECT
     DATE_FORMAT(GREATEST(IFNULL(updated_at, created_at), created_at), '%b') AS month,
     MONTH(GREATEST(IFNULL(updated_at, created_at), created_at)) AS month_number,
-    SUM(total_amount) AS revenue,
+    SUM(amount_paid) AS revenue,
     COUNT(DISTINCT client_id) AS clients
   FROM billing
   WHERE GREATEST(IFNULL(updated_at, created_at), created_at) >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
@@ -1588,7 +1633,8 @@ SELECT
   SUM(CASE WHEN LOWER(service_type) LIKE '%gst%' THEN 1 ELSE 0 END) AS gst_count,
   SUM(CASE WHEN LOWER(service_type) LIKE '%itr%' THEN 1 ELSE 0 END) AS itr_count
 FROM services
-WHERE LOWER(service_type) LIKE '%gst%' OR LOWER(service_type) LIKE '%itr%'
+WHERE deadline IS NOT NULL
+  AND (LOWER(service_type) LIKE '%gst%' OR LOWER(service_type) LIKE '%itr%')
 GROUP BY month_num, month
 ORDER BY month_num;
   `;
@@ -1645,7 +1691,7 @@ app.get("/team_performance",async(req,res)=>{
     2
   ) AS efficiency
 FROM services
-WHERE service_type IN ('incorp', 'gst', 'itr', 'mca', 'ip')
+WHERE service_type IN ('incorp', 'gst', 'itr', 'mca', 'ip', 'iso', 'fssai')
 GROUP BY service_type;
 `;
    try{
@@ -1726,13 +1772,15 @@ app.post("/update_profile", async (req, res) => {
 
 //email remainder for clients
 async function sendReminderEmail(to, subject, htmlContent) {
+  console.log(to,subject,htmlContent);
   try {
-    await transporter.sendMail({
-      from: `support@wealthempires.in`,
-      to,
-      subject,
-      html: htmlContent, // send HTML email
-    });
+      const mailOptions = {
+      from: "support@wealthempires.in",
+      to: to,
+      subject: subject,
+      html: htmlContent,
+    };
+    await transporter.sendMail(mailOptions);
     console.log(`✅ Email sent to ${to}`);
   } catch (error) {
     console.error(`❌ Failed to send email to ${to}:`, error);
@@ -1742,15 +1790,50 @@ async function sendReminderEmail(to, subject, htmlContent) {
 
 
 
+function formatDate(date) {
+  return date.toISOString().split('T')[0];
+}
 
+async function sendReminderEmail(to, subject, html) {
+  try {
+    const mailOptions = {
+      from: 'support@wealthempires.in',
+      to,
+      subject,
+      html
+    };
+    // Test the email transporter
+transporter.verify(function(error, success) {
+  if (error) {
+    console.log('SMTP Connection Error:', error);
+  } else {
+    console.log('SMTP Server is ready to take our messages');
+  }
+});
+    const info = await transporter.sendMail(mailOptions);
+    console.log('Message sent: %s', info.messageId);
+    return true;
+  } catch (error) {
+    console.error('Error sending email:', error);
+    return false;
+  }
+}
 
-// Payment Reminder Task
+function formatDate(date) {
+  return date.toISOString().split('T')[0];
+}
+
 async function checkAndSendReminders() {
   try {
     const today = new Date();
-    const formattedToday = today.toISOString().split('T')[0];
+    const formattedToday = formatDate(today);
+    const plus2 = formatDate(new Date(Date.now() + 2 * 24 * 60 * 60 * 1000));
+    const plus7 = formatDate(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000));
 
-    const query = `
+    // ========================
+    // 1. BILLING REMINDERS
+    // ========================
+    const billingQuery = `
       SELECT 
         b.id AS billing_id,
         b.invoice_number,
@@ -1767,70 +1850,173 @@ async function checkAndSendReminders() {
         DATEDIFF(b.due_date, ?) = 1
       );
     `;
+    
+    try {
+      const [billingRows] = await db.query(billingQuery, [formattedToday, formattedToday]);
+      console.log('Billing rows:', billingRows);
+      
+      for (const row of billingRows) {
+        const subject = `Reminder: Invoice #${row.invoice_number} due on ${row.due_date}`;
+        const html = `
+<div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; background-color: #fafafa;">
+  <h2 style="color: #333; text-align: center; border-bottom: 1px solid #ddd; padding-bottom: 10px;">Payment Reminder</h2>
 
-    const [rows] = await db.query(query, [formattedToday, formattedToday]);
+  <p style="font-size: 16px;">Dear <strong>${row.company_name}</strong>,</p>
+  <p style="font-size: 15px;">This is a kind reminder that your payment is due soon. Kindly review the invoice details below:</p>
 
-    if (rows.length === 0) {
-      console.log("📭 No reminders to send today.");
-      return;
-    }
+  <table style="width: 100%; margin: 20px 0; border-collapse: collapse; font-size: 15px;">
+    <tr>
+      <td style="padding: 8px 0;"><strong>Invoice Number:</strong></td>
+      <td>${row.invoice_number}</td>
+    </tr>
+    <tr>
+      <td style="padding: 8px 0;"><strong>Due Date:</strong></td>
+      <td>${new Date(row.due_date).toLocaleDateString()}</td>
+    </tr>
+    <tr>
+      <td style="padding: 8px 0;"><strong>Total Amount:</strong></td>
+      <td>₹${row.total_amount}</td>
+    </tr>
+    <tr>
+      <td style="padding: 8px 0;"><strong>Pending Amount:</strong></td>
+      <td>₹${row.due_amount}</td>
+    </tr>
+  </table>
 
-    for (const row of rows) {
-const subject = `Reminder: Invoice #${row.invoice_number} due on ${row.due_date}`;
+  <p style="font-size: 15px;">Please ensure the payment is completed before the due date to avoid any late fees.</p>
 
-const html = `
-  <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; background-color: #ffffff;">
-    <div style="text-align: center; margin-bottom: 30px;">
-      <img src="https://wealthempires.in/img/android-chrome-512x512.png" alt="Company Logo" style="max-height: 60px;" />
-    </div>
-    <h2 style="color: #333;">Payment Reminder</h2>
-    <p>Dear <strong>${row.company_name}</strong>,</p>
-    <p>This is a friendly reminder that your payment for the following invoice is due soon:</p>
-
-    <table style="width: 100%; margin: 20px 0; border-collapse: collapse;">
-      <tr>
-        <td style="padding: 8px; border: 1px solid #ccc;"><strong>Invoice Number</strong></td>
-        <td style="padding: 8px; border: 1px solid #ccc;">${row.invoice_number}</td>
-      </tr>
-      <tr>
-        <td style="padding: 8px; border: 1px solid #ccc;"><strong>Due Date</strong></td>
-        <td style="padding: 8px; border: 1px solid #ccc;">${row.due_date}</td>
-      </tr>
-      <tr>
-        <td style="padding: 8px; border: 1px solid #ccc;"><strong>Total Amount</strong></td>
-        <td style="padding: 8px; border: 1px solid #ccc;">₹${row.total_amount}</td>
-      </tr>
-      <tr>
-        <td style="padding: 8px; border: 1px solid #ccc;"><strong>Due Amount</strong></td>
-        <td style="padding: 8px; border: 1px solid #ccc;">₹${row.due_amount}</td>
-      </tr>
-    </table>
-
-    <p>Please ensure payment is completed by the due date to avoid any late charges.</p>
-    <p>If you have already made the payment, kindly disregard this email.</p>
-
-    <br />
-    <p>Thank you,<br />Best Regards,<br/> Wealth Empires</p>
-    <hr style="margin: 30px 0;" />
-    <p style="font-size: 12px; color: #888;">This is an automated reminder. For queries, contact us at support@wealthempires.com.</p>
+  <!-- Footer with logo -->
+  <div style="margin-top: 40px; border-top: 1px solid #ddd; padding-top: 20px; text-align: center;">
+    <img src="https://wealthempires.in/img/android-chrome-512x512.png" alt="Wealth Empires Logo" style="height: 40px; margin-bottom: 10px;" />
+    <p style="font-size: 14px; color: #777;">Wealth Empires Pvt. Ltd.</p>
+    <p style="font-size: 13px; color: #aaa;">This is an automated reminder email. Please do not reply to this message.</p>
   </div>
-`;
+</div>
 
-
-      await sendReminderEmail(row.company_email, subject, html);
+        `;
+        
+        console.log('Sending to:', row.company_email);
+        await sendReminderEmail(row.company_email, subject, html);
+      }
+    } catch(e) {
+      console.log('Billing query error:', e);
     }
 
-    console.log(`📨 Sent ${rows.length} reminder emails.`);
+    // ========================
+    // 2. SERVICE EXPIRY REMINDERS
+    // ========================
+    const serviceQuery = `
+      SELECT 
+        s.client_id,
+        s.service_type,
+        s.expiry_date,
+        c.company_name,
+        c.company_email
+      FROM services s
+      JOIN clients_data c ON s.client_id = c.id
+      WHERE s.expiry_date IN (?, ?, ?);
+    `;
+    
+    try {
+      const [serviceRows] = await db.query(serviceQuery, [formattedToday, plus2, plus7]);
+      console.log('Service rows:', serviceRows);
+      
+      for (const row of serviceRows) {
+        const expiry = new Date(row.expiry_date);
+        const daysLeft = Math.ceil((expiry.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+
+        let subject = '';
+        let message = '';
+
+        if (daysLeft === 7) {
+          subject = `⏳ 7 Days Left: ${row.service_type.toUpperCase()} Expiry Reminder`;
+          message = `This is a reminder that your ${row.service_type.toUpperCase()} service is expiring in 7 days on ${new Date(row.expiry_date).toLocaleDateString()}.`;
+        } else if (daysLeft === 2) {
+          subject = `⚠️ 2 Days Left: ${row.service_type.toUpperCase()} Expiry Reminder`;
+          message = `Only 2 days left! Your ${row.service_type.toUpperCase()} service expires on ${new Date(row.expiry_date).toLocaleDateString()}.`;
+        } else if (daysLeft === 0) {
+          subject = `❗ Expiring Today: ${row.service_type.toUpperCase()} Service`;
+          message = `Your ${row.service_type.toUpperCase()} service is expiring today (${new Date(row.expiry_date).toLocaleDateString()}).`;
+        } else {
+          continue;
+        }
+
+        const html = `
+<div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; background-color: #f9f9f9;">
+  <h2 style="color: #333; text-align: center; border-bottom: 1px solid #ddd; padding-bottom: 10px;">
+    Service Expiry Reminder
+  </h2>
+
+  <p style="font-size: 16px;">Dear <strong>${row.company_name}</strong>,</p>
+  <p style="font-size: 15px;">${message}</p>
+  <p style="font-size: 15px;">Please take the necessary steps to renew or follow up on this service before it expires.</p>
+
+  <!-- Footer -->
+  <div style="margin-top: 40px; border-top: 1px solid #ddd; padding-top: 20px; text-align: center;">
+    <img src="https://wealthempires.in/img/android-chrome-512x512.png" alt="Wealth Empires Logo" style="height: 40px; margin-bottom: 10px;" />
+    <p style="font-size: 14px; color: #555;">Wealth Empires Pvt. Ltd.</p>
+    <p style="font-size: 13px; color: #999;">This is an automated notification. No reply is necessary.</p>
+  </div>
+</div>
+
+        `;
+        
+        console.log('Sending to:', row.company_email);
+        await sendReminderEmail(row.company_email, subject, html);
+      }
+    } catch(e) {
+      console.log('Service query error:', e);
+    }
+
+    console.log(`✅ Reminder job completed at ${new Date().toISOString()}`);
   } catch (error) {
-    console.error("❌ Error in reminder job:", error);
+    console.error("❌ Error in combined reminder job:", error);
   }
 }
 
-// Schedule the job to run daily at 9:00 AM
-cron.schedule('9 * * * *', () => {
-  console.log('⏰ Running test reminder job...');
+
+
+
+// Schedule the job to run daily at 9,1,6.
+cron.schedule('0 9,13,18 * * *', () => {
+  console.log('⏰ Running scheduled reminder job at 9 AM / 1 PM / 6 PM...');
   checkAndSendReminders();
 });
+
+app.delete("/delete_user/:id", async (req, res) => {
+  const userId = req.params.id;
+
+  try {
+    const [result] = await db.execute("DELETE FROM users WHERE id = ?", [userId]);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    res.json({ message: "✅ User deleted successfully" });
+  } catch (error) {
+    console.error("❌ Error deleting user:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+app.patch("/edit_user/:id", async (req, res) => {
+  const { id } = req.params;
+  const { name } = req.body;
+
+  try {
+    await db.query(
+      "UPDATE users SET name = ? WHERE id = ?",
+      [name, id]
+    );
+
+    res.json({ success: true, message: "Client updated successfully." });
+  } catch (error) {
+    console.error("❌ Error updating client:", error);
+    res.status(500).json({ success: false, error: "Failed to update client." });
+  }
+});
+
 
 
 // Optional: Manual trigger route
