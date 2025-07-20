@@ -1293,7 +1293,7 @@ app.patch("/update_service/:id", async (req, res) => {
   }
 });
 
-// ✅ Update Service
+// ✅ Update Status of service
 app.patch("/update_status/:id", async (req, res) => {
   const id = req.params.id;
   console.log(req.body.id);
@@ -1315,9 +1315,6 @@ app.patch("/update_status/:id", async (req, res) => {
 });
 
 async function removeservice(id,service){
-  console.log("IT hits");
-
-
 
   try{
        const [result] = await db.query(
@@ -1344,6 +1341,8 @@ FROM (
   }
 
 }
+
+// Delete a service
 
 app.delete("/delete_service", async (req, res) => {
   const { client_id, section } = req.body;
@@ -1377,7 +1376,7 @@ app.delete("/delete_service", async (req, res) => {
   }
 });
 
-
+// dashboard analytics stats
 app.get("/dashboard_stats", async (req, res) => {
   try {
     const [rows] = await db.query(`
@@ -1395,7 +1394,7 @@ app.get("/dashboard_stats", async (req, res) => {
   }
 });
 
-
+// Get service stats on dashboard
 app.get("/get_service_stats",async(req,res)=>{
   try{
     const [rows]= await db.query(`SELECT 
@@ -1437,6 +1436,7 @@ ORDER BY
   }
 });
 
+// get upcoming dues shown in dashboard
 app.get("/get_upcoming_deadlines",async (req,res)=>{
   console.log(process.env.DB_HOST);
   try{
@@ -1479,6 +1479,7 @@ res.json(rows);
   }
 });
 
+// Get Dues of Clients shown in dashboard
 app.get("/get_dues",async (req,res)=>{
   try{
     const [rows]=await db.query(`SELECT 
@@ -1527,6 +1528,7 @@ res.json(rows);
   }
 });
 
+// Client files query
 app.get('/client-files/:companyName', (req, res) => {
   const companyName = req.params.companyName;
   const folderPath = path.join('uploads', companyName);
@@ -1551,6 +1553,7 @@ app.get('/client-files/:companyName', (req, res) => {
   }
 });
 
+//Update Payment method 
 app.patch("/update_payment/:id", async (req, res) => {
   const client_id = req.params.id;
   const { total_payment, payment, deadline,payment_method } = req.body;
@@ -1576,7 +1579,7 @@ app.patch("/update_payment/:id", async (req, res) => {
     res.status(500).json({ error: "Failed to update billing" });
   }
 });
-
+// Get analytics of analytics page of Services
 app.get("/get_analytics",async (req,res)=>{
   const query=`SELECT service_type, COUNT(*) AS count FROM services GROUP BY service_type;`
   
@@ -1588,6 +1591,7 @@ app.get("/get_analytics",async (req,res)=>{
     console.log(e,"error");
   }
 });
+// Revenue Analytics
   app.get("/get_revenue_analytics",async (req,res)=>{
   const query=`WITH months AS (
   SELECT
@@ -1626,6 +1630,7 @@ ORDER BY m.month_number;
   }
 });
 
+//Analytics page dashboard data query
 app.get("/get_dashboard_analytics", async (req, res) => {
   const mainQuery = `
     SELECT
@@ -1698,7 +1703,7 @@ const leadData = {
   }
 });
 
-
+// Team performance graph
 app.get("/team_performance",async(req,res)=>{
   const query=`SELECT 
   UPPER(service_type) AS team,
@@ -1722,6 +1727,7 @@ GROUP BY service_type;
 
 });
 
+//Get user
 app.get("/get_user/:userName", async (req, res) => {
   console.log("It hits!!");
   const userName = req.params.userName;
@@ -1763,8 +1769,6 @@ app.post("/update_profile", async (req, res) => {
     if (!valid) {
       return res.status(401).json({ message: "Invalid password." });
     }
-
-    // Build update query
     let query = "UPDATE users SET name = ?, email = ?";
     const values = [name, email];
 
@@ -1841,6 +1845,7 @@ function formatDate(date) {
   return date.toISOString().split('T')[0];
 }
 
+// Reminder 
 async function checkAndSendReminders() {
   try {
     const today = new Date();
@@ -1993,14 +1998,13 @@ async function checkAndSendReminders() {
 }
 
 
-
-
 // Schedule the job to run daily at 9,1,6.
 cron.schedule('0 9,13,18 * * *', () => {
   console.log('⏰ Running scheduled reminder job at 9 AM / 1 PM / 6 PM...');
   checkAndSendReminders();
 });
 
+// Delete a user
 app.delete("/delete_user/:id", async (req, res) => {
   const userId = req.params.id;
 
@@ -2018,6 +2022,7 @@ app.delete("/delete_user/:id", async (req, res) => {
   }
 });
 
+// Edit user of admin side whether they can be either admin,account manager,Filling staff,Sales Staff
 app.patch("/edit_user/:id", async (req, res) => {
   const { id } = req.params;
   const { name } = req.body;
@@ -2043,6 +2048,7 @@ app.get('/trigger-reminders', async (req, res) => {
   res.send('Reminder job triggered manually.');
 });
 
+// Report metrics of start and end date as parameters
 app.get("/report_metrics", async (req, res, next) => {
   const { startDate, endDate } = req.query;
 
