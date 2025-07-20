@@ -253,7 +253,7 @@ app.post("/register", async (req, res) => {
     <img src="https://crm.wealthempires.in/logo.png" alt="Company Logo" style="max-height: 80px;" />
   </div>
   <p style="font-size: 20px; font-weight: bold; color: #2c3e50; margin-bottom: 10px;">Set Your Password</p>
-
+ 
   <p>Hi,</p>
 
   <p>We received a request to set the password for your account. To proceed, please click the button below:</p>
