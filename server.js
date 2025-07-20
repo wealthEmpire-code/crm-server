@@ -28,11 +28,11 @@ app.use(express.urlencoded({ extended: true }));
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 app.use(
   session({
-    secret: "secretkey123",
+    secret: "wealthEmpire@1",
     resave: false,
     saveUninitialized: false,
     cookie: {
-    maxAge:40*1000, // 1 day
+    maxAge:40*1000, 
     httpOnly: true,
     sameSite: "lax",
   },
@@ -384,10 +384,15 @@ app.get('/clients/:userName', async (req, res) => {
 // ✅ Get specific client
 app.get("/client/:id", async (req, res) => {
   const id = req.params.id;
-  try {
-    const [results] = await db.query("SELECT * FROM clients_data WHERE id = ?", [id]);
 
-    const [price] = await db.query(`
+  try {
+    const [results] = await db.query(
+      "SELECT * FROM clients_data WHERE id = ?",
+      [id]
+    );
+
+    const [price] = await db.query(
+      `
       SELECT 
         jt.description AS service,
         jt.unit_price AS price
@@ -400,7 +405,9 @@ app.get("/client/:id", async (req, res) => {
         )
       ) AS jt
       WHERE b.client_id = ?;
-    `, [id]);
+      `,
+      [id]
+    );
 
     if (results.length === 0) {
       return res.status(404).json({ error: "Client not found" });
@@ -408,33 +415,33 @@ app.get("/client/:id", async (req, res) => {
 
     const client = results[0];
 
-// Always convert services into { data, price_data }
-if (typeof client.services === "string") {
-  try {
-    client.services = {
-      data: JSON.parse(client.services),
-      price_data: price
-    };
-  } catch {
-    client.services = {
-      data: client.services.split(',').map(s => s.trim()),
-      price_data: price
-    };
-  }
-} else if (Array.isArray(client.services)) {
-  client.services = {
-    data: client.services,
-    price_data: price
-  };
-}
+    // Normalize `services` into { data, price_data }
+    if (typeof client.services === "string") {
+      try {
+        client.services = {
+          data: JSON.parse(client.services),
+          price_data: price
+        };
+      } catch {
+        client.services = {
+          data: client.services.split(',').map((s) => s.trim()),
+          price_data: price
+        };
+      }
+    } else if (Array.isArray(client.services)) {
+      client.services = {
+        data: client.services,
+        price_data: price
+      };
+    }
 
-
-    res.json(client,price);
+    res.json(client);
   } catch (err) {
     console.error("Error fetching client:", err);
     res.status(500).send("Server error while fetching clients");
   }
 });
+
 
 
 // ✅ Create a client
@@ -813,16 +820,15 @@ app.patch(
         service_prices
       } = req.body;
 
-      const servicesArray = JSON.parse(services).map((s) =>
-        s.toLowerCase().trim()
-      );
+      console.log(services);
+      const servicesArray = JSON.parse(services).map((s) => s.toLowerCase().trim());
       console.log(service_prices);
 
     const parsedShareholders = shareholders ? JSON.parse(shareholders) : null;
 
-const service = JSON.parse(service_prices);
-    const billingServices = Object.entries(service).map(([description, price]) => ({
-  description: description,
+const service = JSON.parse(service_prices); // correctly parsed
+const billingServices = Object.entries(service).map(([description, price]) => ({
+  description: description.trim().toLowerCase(),
   quantity: 1,
   unit_price: price
 }));
