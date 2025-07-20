@@ -165,7 +165,7 @@ passport.use(
         if (isMatch) {
           return done(null, user);
         } else {
-          // return done(null, false, { message: "Incorrect password" });
+          return done(null, false, { message: "Incorrect password" });
           return done(null, user);
         }
       } catch (err) {
@@ -327,6 +327,35 @@ app.post("/set-password", async (req, res) => {
     return res.status(500).json({ success: false, message: "Server error." });
   }
 });
+
+
+//Reset password to default
+app.post('/reset-password/:userId', async (req, res) => {
+  const { userId } = req.params;
+
+  const DEFAULT_PASSWORD = 'welcome@123';
+
+  try {
+    const hashedPassword = await bcrypt.hash(DEFAULT_PASSWORD, 12);
+
+    const sql = 'UPDATE users SET password = ? WHERE id = ?';
+    const result = await db.query(sql, [hashedPassword, userId]); 
+      
+
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ success: false, message: 'User not found' });
+      }
+
+      return res.json({ success: true, message: 'Password reset to default successfully' });
+  } catch (error) {
+    console.error('Bcrypt error:', error);
+    return res.status(500).json({ success: false, message: 'Error hashing password' });
+  }
+});
+
+
+
+
 
 // ✅ Get all team members
 app.get("/users/team-groups", async (req, res) => {
@@ -694,7 +723,7 @@ const values = [
     for (const type of servicesArray.map((s) => s.toLowerCase())) {
       await db.query(
         `INSERT INTO services 
-        (client_id, service_type, status, progress, assignedTo, deadline, priority)
+        (client_id, service_type, status, progress, assignedAccountManager, deadline, priority)
         VALUES (?, ?, ?, ?, ?, ?, get_priority_level(?))`,
         [
           client_id,
@@ -896,7 +925,7 @@ for (const file of req.files) {
           oldServicesArray = oldClient.services.split(",").map(s => s.trim());
         }
       }
-      oldServicesArray = oldServicesArray.map((s) => s.toLowerCase());
+      oldServicesArray = JSON.parse(oldServicesArray).map((s) => s.toLowerCase());
 
       const isServiceChanged =
         servicesArray.length !== oldServicesArray.length ||
@@ -1014,7 +1043,8 @@ app.get("/billing_with_clients", async (req, res) => {
         b.due_amount,
         b.status,
         b.notes,
-        b.progress
+        b.progress,
+        b.payment_mode
       FROM billing b
       JOIN clients_data c ON b.client_id = c.id
       ORDER BY b.created_at DESC
@@ -1173,12 +1203,12 @@ app.put("/add_price/:id" , async (req,res)=>{
 // ✅ Patch stage status
 app.patch("/edit_lead/:id", async (req, res) => {
   const id = req.params.id;
-  const { stage_status } = req.body;
+  const { stage_status,last_update } = req.body;
 
   try {
     const [result] = await db.query(
-      "UPDATE client_leads SET stage_status = ? WHERE id = ?",
-      [stage_status, id]
+      "UPDATE client_leads SET stage_status = ? and last_contact = ? WHERE id = ?",
+      [stage_status,last_update, id]
     );
     res.send("✅ Stage updated successfully.");
   } catch (err) {
@@ -1218,10 +1248,11 @@ app.get("/get_all_services/:username", async (req, res) => {
         s.priority
       FROM services s
       JOIN clients_data c ON s.client_id = c.id
-      WHERE s.assignedTo = ?
+      WHERE s.assignedAccountManager = ?
     `;
 
     const [results] = await db.query(query, [username]);
+    console.log(results);
     res.json(results);
   } catch (err) {
     console.error("Error fetching services for user:", err);
