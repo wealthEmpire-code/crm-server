@@ -19,7 +19,7 @@ const app = express();
 
 
 app.use(cors({
-  origin: "http://localhost:8080", 
+  origin: ['http://localhost:8080', 'https://crm.wealthempires.in'],
   credentials: true
 }));
 
