@@ -250,7 +250,7 @@ app.post("/register", async (req, res) => {
     const mailContent = `
      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; padding: 20px; max-width: 600px; margin: auto; background-color: #f9f9f9; border-radius: 8px; border: 1px solid #e0e0e0;">
   <div style="text-align: center; margin-bottom: 20px;">
-    <img src="https://drive.google.com/uc?export=view&id=1BPx32ANU0EsynT5MQgssuxxj5Z21Tf6p" alt="Company Logo" style="max-height: 80px;" />
+    <img src="https://crm.wealthempires.in/logo.png" alt="Company Logo" style="max-height: 80px;" />
   </div>
   <p style="font-size: 20px; font-weight: bold; color: #2c3e50; margin-bottom: 10px;">Set Your Password</p>
 
@@ -1942,7 +1942,7 @@ async function checkAndSendReminders() {
 
   <!-- Footer with logo -->
   <div style="margin-top: 40px; border-top: 1px solid #ddd; padding-top: 20px; text-align: center;">
-    <img src="https://drive.google.com/file/d/1BPx32ANU0EsynT5MQgssuxxj5Z21Tf6p/view?usp=drivesdk" alt="Wealth Empires Logo" style="height: 40px; margin-bottom: 10px;" />
+    <img src="https://crm.wealthempires.in/logo.png" alt="Wealth Empires Logo" style="height: 40px; margin-bottom: 10px;" />
     <p style="font-size: 14px; color: #777;">Wealth Empires Pvt. Ltd.</p>
     <p style="font-size: 13px; color: #aaa;">This is an automated reminder email. Please do not reply to this message.</p>
   </div>
@@ -2008,7 +2008,7 @@ async function checkAndSendReminders() {
 
   <!-- Footer -->
   <div style="margin-top: 40px; border-top: 1px solid #ddd; padding-top: 20px; text-align: center;">
-    <img src="https://drive.google.com/file/d/1BPx32ANU0EsynT5MQgssuxxj5Z21Tf6p/view?usp=drivesdk" alt="Wealth Empires Logo" style="height: 40px; margin-bottom: 10px;" />
+    <img src="https://crm.wealthempires.in/logo.png" alt="Wealth Empires Logo" style="height: 40px; margin-bottom: 10px;" />
     <p style="font-size: 14px; color: #555;">Wealth Empires Pvt. Ltd.</p>
     <p style="font-size: 13px; color: #999;">This is an automated notification. No reply is necessary.</p>
   </div>
