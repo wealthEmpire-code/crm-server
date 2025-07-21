@@ -17,11 +17,26 @@ dotenv.config();
 
 const app = express();
 
+const allowedOrigins = ['https://crm.wealthempires.in', 'http://localhost:8080'];
 
 app.use(cors({
-  origin: ['http://localhost:8080', 'https://crm.wealthempires.in'],
+  origin: function(origin, callback){
+    if(!origin) return callback(null, true);
+    if(allowedOrigins.indexOf(origin) === -1){
+      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+      return callback(new Error(msg), false);
+    }
+    return callback(null, true);
+  },
   credentials: true
 }));
+
+// or a simple version:
+app.use(cors({
+  origin: ['https://crm.wealthempires.in', 'http://localhost:8080'],
+  credentials: true
+}));
+
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
