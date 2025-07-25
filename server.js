@@ -12,33 +12,78 @@ const bcrypt = require("bcrypt");
 const nodemailer = require("nodemailer");
 const crypto = require("crypto");
 const cron = require('node-cron');
+const cloudinary = require('cloudinary').v2;
+const streamifier = require('streamifier');
 
 dotenv.config();
 
 const app = express();
 
-const allowedOrigins = ['https://crm.wealthempires.in', 'http://localhost:8080'];
+cloudinary.config({
+  cloud_name: 'dugvkviiz',
+  api_key: '513258632331899',
+  api_secret: 'E6x6hsKSL6LzYkYzPLCL4Ku4lY0',
+});
+
+
 
 app.use(cors({
-  origin: function(origin, callback){
-    if(!origin) return callback(null, true);
-    if(allowedOrigins.indexOf(origin) === -1){
-      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
-      return callback(new Error(msg), false);
-    }
-    return callback(null, true);
-  },
+  origin: ['http://localhost:8080', 'https://crm.wealthempires.in'],
   credentials: true
 }));
-
-// or a simple version:
-app.use(cors({
-  origin: ['https://crm.wealthempires.in', 'http://localhost:8080'],
-  credentials: true
-}));
-
 
 app.use(express.json());
+
+
+app.post("/delete_file_by_url", async (req, res) => {
+  const { file_url } = req.body;
+  if (!file_url || typeof file_url !== "string") {
+    return res.status(400).json({ message: "Invalid file URL" });
+  }
+
+  try {
+    const url = new URL(file_url);
+    const parts = url.pathname.split("/");
+
+    // Example URL: https://res.cloudinary.com/dugvkviiz/image/upload/v12345/clients/doc.pdf
+    // parts: ['', 'dugvkviiz', 'image', 'upload', 'v12345', 'clients', 'doc.pdf']
+
+    const uploadIndex = parts.findIndex(p => p === "upload");
+    if (uploadIndex === -1 || parts.length <= uploadIndex + 2) {
+      return res.status(400).json({ message: "Invalid Cloudinary URL structure" });
+    }
+
+    // 1. Extract the resource_type (e.g., 'image', 'video', 'raw')
+    // It's the part right before '/upload/'
+    const resourceType = parts[uploadIndex - 1]; 
+
+    // 2. Extract the public_id
+    // It's everything AFTER the version folder ('v12345')
+    const publicIdWithExt = parts.slice(uploadIndex + 2).join("/");
+    const publicId = publicIdWithExt.replace(path.extname(publicIdWithExt), "");
+    
+    console.log("Extracted public_id:", publicId);
+    console.log("Extracted resource_type:", resourceType);
+
+    // 3. Call destroy with the public_id and options
+    const result = await cloudinary.uploader.destroy(publicId, {
+      resource_type: resourceType
+    });
+
+    console.log("Cloudinary deletion result:", result);
+
+    if (result.result === 'ok' || result.result === 'not found') {
+        res.status(200).json({ message: "File deletion processed", result });
+    } else {
+        throw new Error(result.result);
+    }
+
+  } catch (err) {
+    console.error("Cloudinary deletion error:", err);
+    res.status(500).json({ message: "Failed to delete file", error: err.message });
+  }
+});
+
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, "public")));
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
@@ -144,15 +189,13 @@ const storage = multer.diskStorage({
 
 // Configure Multer instance
 const upload = multer({ 
-  storage,
+  storage: multer.memoryStorage(),
   limits: {
-    fileSize: 25 * 1024 * 1024, // 25MB per file
+    fileSize: 25 * 1024 * 1024, // 25MB max per file
   },
   fileFilter: (req, file, cb) => {
-    // Validate file extensions
     const allowedExtensions = ['.pdf', '.jpg', '.jpeg', '.png'];
     const ext = path.extname(file.originalname).toLowerCase();
-    
     if (allowedExtensions.includes(ext)) {
       cb(null, true);
     } else {
@@ -160,6 +203,20 @@ const upload = multer({
     }
   }
 });
+
+// Helper function to upload buffer to Cloudinary
+function uploadToCloudinary(buffer, folder, publicId) {
+  return new Promise((resolve, reject) => {
+    const uploadStream = cloudinary.uploader.upload_stream(
+      { folder, public_id: publicId },
+      (error, result) => {
+        if (error) return reject(error);
+        resolve(result);
+      }
+    );
+    streamifier.createReadStream(buffer).pipe(uploadStream);
+  });
+}
 
 passport.use(
   new LocalStrategy(
@@ -640,13 +697,10 @@ app.post("/add_client", upload.any(), async (req, res) => {
     const parsedShareholders = shareholders ? JSON.parse(shareholders) : null;
 
     // Create client folder
-    const safeCompanyName = company_name.trim().replace(/[^a-zA-Z0-9]/g, "_");
-    const folder = path.join(__dirname, "..", "uploads", "clients", safeCompanyName);
-    if (!fs.existsSync(folder)) {
-      fs.mkdirSync(folder, { recursive: true });
-    }
+const safeCompanyName = company_name.trim().replace(/[^a-zA-Z0-9]/g, "_");
+const cloudFolder = `clients/${safeCompanyName}`;
 
-    const filePaths = {};
+const fileUrlsByCategory = {};
 const categories = Array.isArray(req.body.file_categories)
   ? req.body.file_categories
   : [req.body.file_categories]; // Handle single category
@@ -657,13 +711,20 @@ for (let i = 0; i < req.files.length; i++) {
 
   if (category) {
     const safeKey = category.toLowerCase().replace(/\s+/g, "_");
+    
+    // Create a unique public ID for Cloudinary (optional: you can customize naming)
+    const timestamp = Date.now();
+    const ext = path.extname(file.originalname).toLowerCase();
+    const baseName = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9]/g, "_");
+    const publicId = `${safeKey}_${timestamp}_${baseName}`;
 
-    // ✅ Skip manual rename — multer already stored file at file.path
-    if (!filePaths[safeKey]) {
-      filePaths[safeKey] = [];
+    // Upload to Cloudinary and get the file URL
+    const uploadResult = await uploadToCloudinary(file.buffer, cloudFolder, publicId);
+
+    if (!fileUrlsByCategory[safeKey]) {
+      fileUrlsByCategory[safeKey] = [];
     }
-
-    filePaths[safeKey].push(file.path); // Already correct path
+    fileUrlsByCategory[safeKey].push(uploadResult.secure_url);
   }
 }
 
@@ -716,7 +777,7 @@ const values = [
   phone,
   address,
   status,
-  JSON.stringify(services), // ✅ proper JSON string
+  JSON.stringify(services), 
   revenue,
   assignedTo,
   roc,
@@ -847,233 +908,183 @@ app.post(
 );
 
 // ✅ Edit a client
-app.patch(
-  "/edit_client/:id",
-  upload.any(),
-  async (req, res) => {
-    console.log("🔥 req.body:", req.body);
-    console.log("📁 req.files:", req.files);
-
-    try {
-      const clientid = req.params.id;
-
-      if (!req.body || !req.body.company_name) {
-        return res.status(400).json({ message: "❌ Missing form data" });
-      }
-
-      const {
-        company_name,
-        business_type,
-        pan,
-        gstin,
-        owner_name,
-        company_email,
-        phone,
-        address,
-        status,
-        services,
-        revenue,
-        shareholders,
-        service_prices
-      } = req.body;
-
-      console.log(services);
-      const servicesArray = JSON.parse(services).map((s) => s.toLowerCase().trim());
-      console.log(service_prices);
-
-    const parsedShareholders = shareholders ? JSON.parse(shareholders) : null;
-
-const service = JSON.parse(service_prices); // correctly parsed
-const billingServices = Object.entries(service).map(([description, price]) => ({
-  description: description.trim().toLowerCase(),
-  quantity: 1,
-  unit_price: price
-}));
-      const servicesJson = JSON.stringify(servicesArray);
-
-      // Create client folder if it doesn't exist
-     // Create client folder
-const folder = path.join("uploads", company_name);
-if (!fs.existsSync(folder)) {
-  fs.mkdirSync(folder, { recursive: true });
-}
-
-// Initialize object to hold file paths
-const filePaths = {};
-
-// Get file categories from request body
-const categories = Array.isArray(req.body.file_categories)
-  ? req.body.file_categories
-  : [req.body.file_categories]; // if only one category was sent
-
-// Loop through each uploaded file
-const existingFiles = fs.readdirSync(folder) || [];
-let fileCounter = existingFiles.length + 1;
-
-for (const file of req.files) {
-  const fileExt = path.extname(file.originalname);
-  const fileName = `file_${fileCounter}${fileExt}`;
-  const filePath = path.join(folder, fileName);
-
-  fs.renameSync(file.path, filePath);
-
-  // Store relative path
-  filePaths[`file_${fileCounter}`] = path
-    .join("uploads", company_name.replace(/[^a-z0-9]/gi, "_"), fileName)
-    .replace(/\\/g, '/');
-
-  fileCounter++;
-}
-
-      // Get old services from DB
-      const [[oldClient]] = await db.query(
-        "SELECT services FROM clients_data WHERE id = ?",
-        [clientid]
-      );
-      
-      let oldServicesArray = [];
-      if (Array.isArray(oldClient.services)) {
-        oldServicesArray = oldClient.services;
-      } else if (typeof oldClient.services === "string") {
-        try {
-          oldServicesArray = JSON.parse(oldClient.services);
-        } catch (err) {
-          oldServicesArray = oldClient.services.split(",").map(s => s.trim());
-        }
-      }
-      oldServicesArray = JSON.parse(oldServicesArray).map((s) => s.toLowerCase());
-
-      const isServiceChanged =
-        servicesArray.length !== oldServicesArray.length ||
-        !servicesArray.every((val) => oldServicesArray.includes(val));
-
-      // Build SQL query dynamically based on available fields
-      let query = `
-        UPDATE clients_data
-        SET 
-          company_name = ?, 
-          business_type = ?, 
-          pan = ?, 
-          gstin = ?, 
-          owner_name = ?, 
-          company_email = ?, 
-          phone = ?, 
-          address = ?, 
-          status = ?, 
-          services = ?,
-          last_contact = ?,
-          revenue = ?,
-          shareholders=?
-
-      `;
-
-const values = [
-  company_name,
-  business_type,
-  pan?.trim() ? pan : null,
-  gstin?.trim() ? gstin : null,
-  owner_name,
-  company_email,
-  phone,
-  address,
-  status,
-  servicesJson,
-  new Date().toISOString().slice(0, 10),
-  revenue,
-  parsedShareholders ? JSON.stringify(parsedShareholders) : null
-];
-
-
-
-      query += " WHERE id = ?";
-      values.push(clientid);
-
-      const [result] = await db.query(query, values);
-
-      // Only insert new services if changed
-      if (isServiceChanged) {
-        for (const type of servicesArray) {
-          await db.query(
-            `INSERT INTO services (client_id, service_type)
-             VALUES (?, ?)`,
-            [clientid, type]
-          );
-        }
-      }
-      const expiryDates = JSON.parse(req.body.expiry_dates || "{}");
-
-for (const [service, expiry] of Object.entries(expiryDates)) {
-  
-  await db.query(
-    `UPDATE services SET expiry_date = ? WHERE client_id = ? AND service_type = ?`,
-    [expiry, clientid, service]
-  );
-}
-
-
-      if (result.affectedRows === 0) {
-        return res.status(404).json({ message: "❌ Client not found." });
-      }
-      const servicesJSON = JSON.stringify(billingServices);
-      console.log(servicesJSON);
-
-const [billing] = await db.query(
-  "UPDATE billing SET total_amount = ?, services = ? WHERE client_id = ?",
-  [revenue, servicesJSON, clientid]
-);
-        if (billing.affectedRows === 0) {
-        return res.status(404).json({ message: "❌ Cannot update client billing" });
-      }
-      res.status(200).json({ 
-        message: "✅ Client updated successfully.",
-        files: filePaths
-      });
-    } catch (err) {
-      console.error("❌ Error updating client:", err);
-      res.status(500).send("Server error while updating client");
-    }
-  }
-);
-
-app.get("/billing_with_clients", async (req, res) => {
+app.patch("/edit_client/:id", upload.any(), async (req, res) => {
   try {
-    const [rows] = await db.query(`
-      SELECT 
-        b.id AS billing_id,
-        b.invoice_number,
-        b.client_id,
-        c.company_name,
-        c.owner_name,
-        c.company_email,
-        c.phone,
-        c.address,
-        c.assignedTo,
-        c.gstin,
-        b.billing_date,
-        b.due_date,
-        b.services,
-        b.subtotal,
-        b.tax,
-        b.total_amount,
-        b.amount_paid,
-        b.due_amount,
-        b.status,
-        b.notes,
-        b.progress,
-        b.payment_mode
-      FROM billing b
-      JOIN clients_data c ON b.client_id = c.id
-      ORDER BY b.created_at DESC
-    `);
-    console.log(rows);
+    const clientid = req.params.id;
 
-    res.status(200).json(rows);
+    if (!req.body || !req.body.company_name) {
+      return res.status(400).json({ message: "❌ Missing form data" });
+    }
+
+    const {
+      company_name,
+      business_type,
+      pan,
+      gstin,
+      owner_name,
+      company_email,
+      phone,
+      address,
+      status,
+      services,
+      revenue,
+      shareholders,
+      service_prices,
+    } = req.body;
+
+    const servicesArray = JSON.parse(services).map((s) =>
+      s.toLowerCase().trim()
+    );
+    const parsedShareholders = shareholders ? JSON.parse(shareholders) : null;
+    const parsedServicePrices = JSON.parse(service_prices);
+
+    const billingServices = Object.entries(parsedServicePrices).map(
+      ([description, price]) => ({
+        description: description.trim().toLowerCase(),
+        quantity: 1,
+        unit_price: price,
+      })
+    );
+
+    const servicesJson = JSON.stringify(servicesArray);
+    const safeCompanyName = company_name.trim().replace(/[^a-zA-Z0-9]/g, "_");
+    const cloudFolder = `clients/${safeCompanyName}`;
+
+    const fileUrlsByCategory = {};
+
+    if (req.files?.length > 0) {
+      const categories = Array.isArray(req.body.file_categories)
+        ? req.body.file_categories
+        : [req.body.file_categories];
+
+      for (let i = 0; i < req.files.length; i++) {
+        const file = req.files[i];
+        const category = categories[i] || "uncategorized";
+
+        const safeKey = category.toLowerCase().replace(/\s+/g, "_");
+        const timestamp = Date.now();
+        const ext = path.extname(file.originalname).toLowerCase();
+        const baseName = path
+          .basename(file.originalname, ext)
+          .replace(/[^a-zA-Z0-9]/g, "_");
+
+        const publicId = `${safeKey}_${timestamp}_${baseName}`;
+        const uploadResult = await uploadToCloudinary(
+          file.buffer,
+          cloudFolder,
+          publicId
+        );
+
+        if (!fileUrlsByCategory[safeKey]) {
+          fileUrlsByCategory[safeKey] = [];
+        }
+        fileUrlsByCategory[safeKey].push(uploadResult.secure_url);
+      }
+    }
+
+    // Fetch old services
+    const [[oldClient]] = await db.query(
+      "SELECT services FROM clients_data WHERE id = ?",
+      [clientid]
+    );
+
+    let oldServicesArray = [];
+    if (Array.isArray(oldClient.services)) {
+      oldServicesArray = oldClient.services;
+    } else if (typeof oldClient.services === "string") {
+      try {
+        oldServicesArray = JSON.parse(oldClient.services);
+      } catch {
+        oldServicesArray = oldClient.services.split(",").map((s) => s.trim());
+      }
+    }
+
+    const isServiceChanged =
+      servicesArray.length !== oldServicesArray.length ||
+      !servicesArray.every((val) => oldServicesArray.includes(val));
+
+    // Update query
+    const query = `
+      UPDATE clients_data
+      SET
+        company_name = ?,
+        business_type = ?,
+        pan = ?,
+        gstin = ?,
+        owner_name = ?,
+        company_email = ?,
+        phone = ?,
+        address = ?,
+        status = ?,
+        services = ?,
+        last_contact = ?,
+        revenue = ?,
+        shareholders = ?
+      WHERE id = ?
+    `;
+    const values = [
+      company_name,
+      business_type,
+      pan?.trim() || null,
+      gstin?.trim() || null,
+      owner_name,
+      company_email,
+      phone,
+      address,
+      status,
+      servicesJson,
+      new Date().toISOString().slice(0, 10),
+      revenue || null,
+      parsedShareholders ? JSON.stringify(parsedShareholders) : null,
+      clientid,
+    ];
+
+    const [result] = await db.query(query, values);
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: "❌ Client not found." });
+    }
+
+    // Update services if changed
+    if (isServiceChanged) {
+      for (const type of servicesArray) {
+        await db.query(
+          `INSERT INTO services (client_id, service_type) VALUES (?, ?)`,
+          [clientid, type]
+        );
+      }
+    }
+
+    // Expiry date update
+    const expiryDates = JSON.parse(req.body.expiry_dates || "{}");
+    for (const [service, expiry] of Object.entries(expiryDates)) {
+      await db.query(
+        `UPDATE services SET expiry_date = ? WHERE client_id = ? AND service_type = ?`,
+        [expiry, clientid, service]
+      );
+    }
+
+    // Update billing
+    const servicesJSON = JSON.stringify(billingServices);
+    const [billing] = await db.query(
+      "UPDATE billing SET total_amount = ?, services = ? WHERE client_id = ?",
+      [revenue, servicesJSON, clientid]
+    );
+
+    if (billing.affectedRows === 0) {
+      return res
+        .status(404)
+        .json({ message: "❌ Cannot update client billing" });
+    }
+
+    res.status(200).json({
+      message: "✅ Client updated successfully.",
+      uploaded_files: fileUrlsByCategory,
+    });
   } catch (err) {
-    console.error("❌ Error fetching billing info:", err);
-    res.status(500).json({ error: "Server error while fetching billing info" });
+    console.error("❌ Error updating client:", err);
+    res.status(500).send("Server error while updating client");
   }
 });
-
 
 app.get("/get_client_history/:id", async (req, res) => {
   const client_id = req.params.id;
@@ -1104,59 +1115,29 @@ WHERE
   }
 });
 
-// ✅ Delete a client
-app.delete("/delete_client/:id", async (req, res) => {
-  const clientId = req.params.id;
+app.get("/get_client_files/:company", async (req, res) => {
+  const company = req.params.company.trim().replace(/ /g, '_');
+  const folderPath = `clients/${company}`;  
+  console.log(folderPath);
 
   try {
-    // Delete services (if any) — no problem if none exist
-    await db.query("DELETE FROM services WHERE client_id = ?", [clientId]);
+    const result = await cloudinary.api.resources({
+      type: "upload",
+      prefix: `${folderPath}/`, 
+      max_results: 100,
+    });
+    console.log("result",result);
 
-    // Then delete the client
-    const [clientResult] = await db.query(
-      "DELETE FROM clients_data WHERE id = ?",
-      [clientId]
-    );
+    const files = result.resources.map((file) => ({
+      name: file.public_id.split("/").pop(),
+      url: file.secure_url,
+      type: file.format,
+    }));
 
-    if (clientResult.affectedRows === 0) {
-      return res.status(404).send("❌ Client not found.");
-    }
-
-    res.send("✅ Client deleted successfully.");
+    res.json(files);
   } catch (err) {
-    console.error("❌ Error deleting client:", err);
-    res.status(500).send("Failed to delete client.");
-  }
-});
-
-// ✅ Add a lead
-app.post("/add-lead", async (req, res) => {
-  const body = req.body;
-  if (!body.company_name || !body.owner_name || !body.services) {
-    return res.status(400).json({ error: "Required fields missing." });
-  }
-
-  try {
-    const sql = `
-      INSERT INTO client_leads 
-      (company_name, owner_name, email, phone, services, last_contact, assigned_to, stage_status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `;
-    const values = [
-      body.company_name,
-      body.owner_name,
-      body.email || null,
-      body.phone || null,
-      JSON.stringify(body.services),
-      body.last_contact || new Date().toISOString().slice(0, 10),
-      body.assigned_to,
-      body.stage_status,
-    ];
-    const [result] = await db.query(sql, values);
-    res.status(201).json({ message: "Lead saved", id: result.insertId });
-  } catch (err) {
-    console.error("Insert error:", err);
-    res.status(500).json({ error: "Database error" });
+    console.error("Cloudinary error:", err);
+    res.status(500).json({ error: "Failed to fetch files" });
   }
 });
 
@@ -1211,10 +1192,6 @@ app.put("/add_price/:id" , async (req,res)=>{
   const id=req.id;
   const body=req.body;
 })
-
-
-
-
 
 // ✅ Patch stage status
 app.patch("/edit_lead/:id", async (req, res) => {
@@ -1446,35 +1423,48 @@ app.get("/get_service_stats",async(req,res)=>{
   try{
     const [rows]= await db.query(`SELECT 
   CASE 
-    WHEN service_type = 'gst' THEN 'GST Filing'
-    WHEN service_type = 'itr' THEN 'ITR Processing'
-    WHEN service_type = 'mca' THEN 'MCA Compliance'
-    WHEN service_type = 'ip' THEN 'IP Renewals'
-    WHEN service_type = 'incorp' THEN 'Incorporation'
+    WHEN service_type = 'gst' THEN 'GST'
+    WHEN service_type = 'itr' THEN 'ITR'
+    WHEN service_type = 'mca' THEN 'MCA'
+    WHEN service_type = 'ip' THEN 'IP'
+    WHEN service_type = 'iso' THEN 'ISO'
+    WHEN service_type = 'incorp' THEN 'INCORP'
+    WHEN service_type = 'fssai' THEN 'FSSAI'
     ELSE service_type
   END AS name,
 
+  -- Counting completed vs. total services per group
   COALESCE(SUM(CASE WHEN progress = 100 THEN 1 ELSE 0 END), 0) AS completed,
   COALESCE(COUNT(*), 0) AS total,
 
+  -- MODIFIED: Status logic with 'complete' check first
   CASE 
-    WHEN MAX(deadline) IS NULL THEN 'no-deadline'
-    WHEN DATEDIFF(MAX(deadline), CURDATE()) < 0 THEN 'behind'
-    WHEN DATEDIFF(MAX(deadline), CURDATE()) > 10 THEN 'ahead'
+    -- 1. If completed tasks equal total tasks, status is 'complete'
+    WHEN COALESCE(SUM(CASE WHEN progress = 100 THEN 1 ELSE 0 END), 0) = COUNT(*) THEN 'complete'
+    -- 2. Existing logic now uses MIN(deadline)
+    WHEN MIN(deadline) IS NULL THEN 'no-deadline'
+    WHEN DATEDIFF(MIN(deadline), CURDATE()) < 0 THEN 'behind'
+    WHEN DATEDIFF(MIN(deadline), CURDATE()) > 10 THEN 'ahead'
     ELSE 'on-track'
   END AS status,
 
+  -- MODIFIED: Fetches the earliest (minimum) deadline for the group
   MAX(deadline) AS deadline
-FROM services
-GROUP BY service_type
+FROM 
+  services
+GROUP BY 
+  service_type
 ORDER BY 
+  -- MODIFIED: Updated sorting logic to handle the new 'complete' status
   CASE 
-    WHEN MAX(deadline) IS NULL THEN 4
-    WHEN DATEDIFF(MAX(deadline), CURDATE()) < 0 THEN 1
-    WHEN DATEDIFF(MAX(deadline), CURDATE()) > 10 THEN 3
-    ELSE 2
+    WHEN DATEDIFF(MIN(deadline), CURDATE()) < 0 THEN 1 -- 'behind' first
+    WHEN MIN(deadline) IS NULL THEN 4 -- 'no-deadline' after most
+    WHEN COALESCE(SUM(CASE WHEN progress = 100 THEN 1 ELSE 0 END), 0) = COUNT(*) THEN 5 -- 'complete' last
+    WHEN DATEDIFF(MIN(deadline), CURDATE()) > 10 THEN 3 -- 'ahead'
+    ELSE 2 -- 'on-track'
   END,
-  MAX(deadline) ASC;
+  -- Secondary sort by the earliest deadline
+  MIN(deadline) ASC;
 `)
  res.json(rows);
   }
@@ -2159,6 +2149,9 @@ WHERE last_contact BETWEEN ? AND ?;
     next(err);
   }
 });
+
+//delete cloudinary file
+
 
 
 
