@@ -874,6 +874,51 @@ const values = [
   }
 });
 
+app.get("/billing_with_clients", async (req, res) => {
+  try {
+    const [rows] = await db.query(`
+      SELECT 
+        b.id AS billing_id,
+        b.invoice_number,
+        b.client_id,
+        c.company_name,
+        c.owner_name,
+        c.company_email,
+        c.phone,
+        c.address,
+        c.assignedTo,
+        c.gstin,
+        b.billing_date,
+        b.due_date,
+        b.services,
+        b.subtotal,
+        b.tax,
+        b.total_amount,
+        b.amount_paid,
+        b.due_amount,
+        b.status,
+        b.notes,
+        b.progress,
+        b.payment_mode
+      FROM billing b
+      JOIN clients_data c ON b.client_id = c.id
+      ORDER BY b.created_at DESC
+    `);
+    console.log(rows);
+
+    res.status(200).json(rows);
+    res.status(200).json({
+      message: "✅ Client updated successfully.",
+      uploaded_files: fileUrlsByCategory,
+    });
+  } catch (err) {
+    console.error("❌ Error fetching billing info:", err);
+    res.status(500).json({ error: "Server error while fetching billing info" });
+    console.error("❌ Error updating client:", err);
+    res.status(500).send("Server error while updating client");
+  }
+});
+
 // ✅ Upload KYC files
 app.post(
   "/upload_kyc/:id",
