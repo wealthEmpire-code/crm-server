@@ -28,7 +28,7 @@ cloudinary.config({
 
 
 app.use(cors({
-  origin: ['http://localhost:8080', 'https://crm.wealthempires.in'],
+  origin: ['http://localhost:8080', 'https://crm.wealthempires.in','https://onboarding.wealthempires.in'],
   credentials: true
 }));
 
