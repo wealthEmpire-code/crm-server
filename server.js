@@ -28,11 +28,7 @@ cloudinary.config({
 
 
 app.use(cors({
-  origin: [
-    'http://localhost:8080', 
-    'https://crm.wealthempires.in',
-    'https://onboarding.wealthempires.in' 
-  ],
+  origin: ['http://localhost:8080', 'https://crm.wealthempires.in'],
   credentials: true
 }));
 
@@ -326,7 +322,7 @@ app.post("/register", async (req, res) => {
     const mailContent = `
      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; padding: 20px; max-width: 600px; margin: auto; background-color: #f9f9f9; border-radius: 8px; border: 1px solid #e0e0e0;">
   <div style="text-align: center; margin-bottom: 20px;">
-    <img src="https://crm.wealthempires.in/logo.png" alt="Company Logo" style="max-height: 80px;" />
+    <img src="https://wealthempires.in/img/android-chrome-512x512.png" alt="Company Logo" style="max-height: 80px;" />
   </div>
   <p style="font-size: 20px; font-weight: bold; color: #2c3e50; margin-bottom: 10px;">Set Your Password</p>
  
@@ -474,6 +470,7 @@ app.get("/clients", async (req, res) => {
   try {
     const [results] = await db.query("SELECT * FROM clients_data");
     res.json(results);
+   console.log("Nooo!!!");
   } catch (err) {
     console.error("Error fetching clients:", err);
     res.status(500).send("Server error while fetching clients");
@@ -486,11 +483,12 @@ app.get('/clients/:userName', async (req, res) => {
   console.log(userName);
 
   try {
-    const [rows] = await db.execute(
-      'SELECT * FROM clients_data WHERE assignedTo = ? AND status NOT IN (?, ?)', 
-      [userName, 'completed', 'rejected']
-    );
+const [rows] = await db.query(
+  'SELECT * FROM clients_data WHERE assignedTo = ?', 
+  [userName]
+);
 
+   console.log("Yess!!!");
     res.json(rows);
   } catch (err) {
     console.error(err);
@@ -678,8 +676,6 @@ app.post("/add_client", upload.any(), async (req, res) => {
     const {
       company_name,
       business_type,
-      pan,
-      gstin,
       owner_name,
       company_email,
       phone,
@@ -804,16 +800,14 @@ const values = [
     for (const type of servicesArray.map((s) => s.toLowerCase())) {
       await db.query(
         `INSERT INTO services 
-        (client_id, service_type, status, progress, assignedAccountManager, deadline, priority)
-        VALUES (?, ?, ?, ?, ?, ?, get_priority_level(?))`,
+        (client_id, service_type, status, progress, assignedAccountManager)
+        VALUES (?, ?, ?, ?, ?)`,
         [
           client_id,
           type,
           defaultServiceDetails.status,
           defaultServiceDetails.progress,
           defaultServiceDetails.assignedTo,
-          defaultServiceDetails.deadline,
-          defaultServiceDetails.deadline,
         ]
       );
     }
@@ -834,10 +828,13 @@ const values = [
 
     // Prepare billing record
     const invoiceNumber = `INV-${company_name + " " + Date.now()}`; // Unique invoice number
-    const billingDate = null; // You can update this later
-    const dueDate = null;
     const totalAmount = parseFloat(revenue) || 0;
     const amountPaid = 0;
+    const today = new Date();
+    const billingDate = today.toISOString().slice(0, 10);
+    const future = new Date();
+    future.setDate(today.getDate() + 15);
+    const dueDate = future.toISOString().slice(0, 10);
 
     // Store basic service descriptions
     const billingServices = servicesArray.map(service => ({
@@ -848,19 +845,17 @@ const values = [
 
     const billingSQL = `
       INSERT INTO billing (
-        invoice_number, client_id, billing_date, due_date, 
+        invoice_number, client_id,
         services, subtotal, tax, total_amount, amount_paid, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
     const billingValues = [
       invoiceNumber,
       client_id,
-      billingDate,
-      dueDate,
       JSON.stringify(billingServices),
-      totalAmount,       // subtotal (same as revenue here)
-      0,                 // tax
+      totalAmount,       
+      0,               
       totalAmount,
       amountPaid,
       "unpaid",
@@ -1201,6 +1196,51 @@ app.get("/get_client_leads", async (req, res) => {
   }
 });
 
+app.post("/add-lead", async (req, res) => {
+  const {
+    company_name,
+    email,
+    phone,
+    owner_name,
+    last_contact,
+    stage_status,
+    assigned_to,
+    services,
+  } = req.body;
+
+  // Validation (you can enhance this as needed)
+  if (!company_name || !email || !phone) {
+    return res.status(400).json({ message: "Missing required fields" });
+  }
+
+  try {
+    // Store `services` array as a JSON string
+    const servicesString = JSON.stringify(services);
+
+    const [result] = await db.query(
+      `INSERT INTO client_leads 
+      (company_name, email, phone, owner_name, last_contact, stage_status, assigned_to, services)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        company_name,
+        email,
+        phone,
+        owner_name,
+        last_contact,
+        stage_status,
+        assigned_to || null,
+        servicesString,
+      ]
+    );
+
+    res.status(201).json({ message: "Lead added successfully", insertId: result.insertId });
+  } catch (err) {
+    console.error("Error adding lead:", err);
+    res.status(500).json({ message: "Server error while adding lead" });
+  }
+});
+
+
 // ✅ Edit lead (full)
 app.put("/edit_lead/:id", async (req, res) => {
   const id = req.params.id;
@@ -1270,6 +1310,35 @@ app.delete("/delete_lead/:id", async (req, res) => {
     console.error("Error deleting lead:", err);
     res.status(500).send("Server error");
   }
+});
+
+app.delete("/delete_client/:id", async (req, res) => {
+  try {
+    const [result] = await db.query("DELETE FROM client_leads WHERE id = ?", [
+      req.params.id,
+    ]);
+    res.json({ message: "✅ Lead deleted", result });
+  } catch (err) {
+    console.error("Error deleting lead:", err);
+    res.status(500).send("Server error");
+  }
+});
+
+app.delete("/delete_clients/:id", async (req, res) => {
+  const clientId = req.params.id;
+  try {
+    // Delete from billing
+    await db.query("DELETE FROM billing WHERE client_id = ?", [clientId]);
+    // Delete from services
+    await db.query("DELETE FROM services WHERE client_id = ?", [clientId]);
+    console.log("Hii");
+    // Delete from clients_data
+    await db.query("DELETE FROM clients_data WHERE id = ?", [clientId]);
+    res.json({ message: "✅ Client and related data deleted successfully" });
+  } catch (err) {
+    console.error("Error deleting client data:", err);
+    res.status(500).send("❌ Server error while deleting client");
+  } 
 });
 
 // ✅ Get all Services
@@ -1457,7 +1526,7 @@ app.get("/dashboard_stats", async (req, res) => {
         (SELECT COUNT(DISTINCT client_id) FROM services) AS total_clients,
         (SELECT COUNT(*) FROM clients_data WHERE status = 'active') AS active_services,
         (SELECT COUNT(*) FROM services WHERE status != 'approval' AND progress < 100) AS pending_tasks,
-        (SELECT SUM(amount_paid) FROM billing WHERE status IN ('paid', 'partial')) AS total_revenue
+        (SELECT SUM(amount_paid) FROM billing WHERE status IN ('paid', 'partial')) AS total_revenuex
     `);
 
     res.json(rows[0]);
@@ -2198,11 +2267,6 @@ WHERE last_contact BETWEEN ? AND ?;
     next(err);
   }
 });
-
-//delete cloudinary file
-
-
-
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
