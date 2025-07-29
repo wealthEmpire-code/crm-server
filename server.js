@@ -1197,46 +1197,33 @@ app.get("/get_client_leads", async (req, res) => {
 });
 
 app.post("/add-lead", async (req, res) => {
-  const {
-    company_name,
-    email,
-    phone,
-    owner_name,
-    last_contact,
-    stage_status,
-    assigned_to,
-    services,
-  } = req.body;
-
-  // Validation (you can enhance this as needed)
-  if (!company_name || !email || !phone) {
-    return res.status(400).json({ message: "Missing required fields" });
+  const body = req.body;
+  console.log(req.body);
+  if (!body.company_name || !body.owner_name || !body.services) {
+    return res.status(400).json({ error: "Required fields missing." });
   }
 
   try {
-    // Store `services` array as a JSON string
-    const servicesString = JSON.stringify(services);
-
-    const [result] = await db.query(
-      `INSERT INTO client_leads 
-      (company_name, email, phone, owner_name, last_contact, stage_status, assigned_to, services)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        company_name,
-        email,
-        phone,
-        owner_name,
-        last_contact,
-        stage_status,
-        assigned_to || null,
-        servicesString,
-      ]
-    );
-
-    res.status(201).json({ message: "Lead added successfully", insertId: result.insertId });
+    const sql = `
+      INSERT INTO client_leads 
+      (company_name, owner_name, email, phone, services, last_contact, assigned_to, stage_status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+    const values = [
+      body.company_name,
+      body.owner_name,
+      body.email || null,
+      body.phone || null,
+      JSON.stringify(body.services),
+      body.last_contact || new Date().toISOString().slice(0, 10),
+      body.assigned_to || "",
+      body.stage_status,
+    ];
+    const [result] = await db.query(sql, values);
+    res.status(201).json({ message: "Lead saved", id: result.insertId });
   } catch (err) {
-    console.error("Error adding lead:", err);
-    res.status(500).json({ message: "Server error while adding lead" });
+    console.error("Insert error:", err);
+    res.status(500).json({ error: "Database error" });
   }
 });
 
@@ -1284,13 +1271,15 @@ app.put("/add_price/:id" , async (req,res)=>{
 
 // ✅ Patch stage status
 app.patch("/edit_lead/:id", async (req, res) => {
+  console.log("It hits!!!");
   const id = req.params.id;
-  const { stage_status,last_update } = req.body;
+  const { stage_status } = req.body;
+  console.log(stage_status);
 
   try {
     const [result] = await db.query(
-      "UPDATE client_leads SET stage_status = ? and last_contact = ? WHERE id = ?",
-      [stage_status,last_update, id]
+      "UPDATE client_leads SET stage_status = ?  WHERE id = ?",
+      [stage_status, id]
     );
     res.send("✅ Stage updated successfully.");
   } catch (err) {
@@ -2267,6 +2256,8 @@ WHERE last_contact BETWEEN ? AND ?;
     next(err);
   }
 });
+
+
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
